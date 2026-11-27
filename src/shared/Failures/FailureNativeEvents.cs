@@ -33,6 +33,7 @@ namespace RvtMcp.Plugin.Failures
         }
 
         private static bool _subscribed, _applicationClosing;
+        [ThreadStatic] private static FamilyAuthoringAuthorization _familyAuthoring;
         private static string _nativeOperation;
         private static readonly List<OpenAttempt> Opening = new List<OpenAttempt>();
         private static OpenAttempt _lastOpened;
@@ -392,6 +393,70 @@ namespace RvtMcp.Plugin.Failures
             catch { if (Scoped()) DenyIncomplete(args, state, "save", "Save identity or format could not be verified; use Revit to inspect and save the model."); }
         }
 
+        private sealed class FamilyAuthoringAuthorization
+        {
+            internal Document Document;
+            internal string Path;
+            internal bool Used;
+            internal bool Finished;
+        }
+
+        // A typed family-authoring call gets exactly one non-overwriting SaveAs of the document
+        // it opened itself, to its own unique temporary .rfa. This is not a reusable native grant
+        // and never authorizes an existing model, a user document, a different target, or Close.
+        internal static IDisposable AuthorizeFamilySave(Document document, string path)
+        {
+            if (_familyAuthoring != null) throw new InvalidOperationException("A family save authorization is already active.");
+            if (document == null || !document.IsValidObject || !document.IsFamilyDocument
+                || string.IsNullOrWhiteSpace(path) || McpDocument.CurrentOwnedDocument(document) == null)
+                throw new InvalidOperationException("Only the new family document owned by this call can be saved.");
+            var authorization = new FamilyAuthoringAuthorization { Document = document, Path = Path.GetFullPath(path) };
+            var local = Handlers.OpenModelLocalPolicy.NormalizePath(authorization.Path);
+            if (local.StartsWith(@"\\", StringComparison.Ordinal) || File.Exists(local) || Directory.Exists(local))
+                throw new InvalidOperationException("The family temporary path must be a new local file.");
+            if (!Path.GetExtension(local).Equals(".rfa", StringComparison.OrdinalIgnoreCase)
+                || !Path.GetFileName(local).StartsWith(".rvtmcp-", StringComparison.Ordinal))
+                throw new InvalidOperationException("The family save authorization requires its unique temporary .rfa path.");
+            _familyAuthoring = authorization;
+            return new ActionOnDispose(() =>
+            {
+                authorization.Finished = true;
+                if (ReferenceEquals(_familyAuthoring, authorization)) _familyAuthoring = null;
+            });
+        }
+
+        private static bool AllowFamilySaveAs(DocumentSavingAsEventArgs args, DocumentState state)
+        {
+            var authorization = _familyAuthoring;
+            if (authorization == null || authorization.Finished || authorization.Used
+                || !authorization.Document.Equals(args.Document) || args.Document.IsWorkshared
+                || args.IsSavingAsCentralFile || string.IsNullOrWhiteSpace(args.PathName)
+                || File.Exists(args.PathName) || Directory.Exists(args.PathName)
+                || !Handlers.OpenModelLocalPolicy.PathsEqual(authorization.Path, args.PathName)
+                || !Handlers.OpenModelLocalPolicy.PathsEqual(
+                    Handlers.ParametricFamilyInput.TemporaryOutputDirectory(authorization.Path),
+                    Path.GetDirectoryName(args.PathName)))
+                return false;
+            authorization.Used = true;
+            // SaveAs/SaveAs are the durable native commit for the tool-owned temporary .rfa;
+            // the later same-volume non-overwriting rename creates the requested final output.
+            if (Scoped())
+            {
+                Active.NativeCommitted = true;
+                // This is only the temporary .rfa commit. Final output completion is
+                // File.Move after a supported close, not another model mutation.
+                Active.SaveOperation();
+            }
+            return true;
+        }
+
+        private sealed class ActionOnDispose : IDisposable
+        {
+            private readonly Action _action;
+            internal ActionOnDispose(Action action) { _action = action; }
+            public void Dispose() { _action(); }
+        }
+
         private static void OnDocumentSavingAs(object sender, DocumentSavingAsEventArgs args)
         {
             if (!Scoped()) return;
@@ -399,6 +464,7 @@ namespace RvtMcp.Plugin.Failures
             try
             {
                 state = State(args.Document);
+                if (AllowFamilySaveAs(args, state)) return;
                 var target = args.PathName;
                 bool exists = File.Exists(target);
                 string physical = exists ? HistoryFileIdentity.TryGet(target) : null;

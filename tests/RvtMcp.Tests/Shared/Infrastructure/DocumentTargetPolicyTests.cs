@@ -49,17 +49,35 @@ namespace RvtMcp.Tests
             }
         }
         [Theory]
-        [InlineData(null, null)]
-        [InlineData(null, "doc-a")]
-        [InlineData("doc-a", "doc-b")]
-        public void Independent_family_authoring_uses_confirmed_target_not_project_document(
-            string expected, string actual)
+        [InlineData(null, null, true)]
+        [InlineData(null, "doc-a", false)]
+        [InlineData("doc-a", "doc-a", true)]
+        [InlineData("doc-a", "doc-b", false)]
+        public void Independent_family_authoring_preserves_exact_document_or_home_confirmation(
+            string expected, string actual, bool allowed)
         {
-            Assert.Null(ToolReadPolicy.DocumentRejection("create_parametric_family", expected, actual));
-            Assert.Null(ToolReadPolicy.DocumentRejection("CREATE_PARAMETRIC_FAMILY", expected, actual, true));
+            var rejection = ToolReadPolicy.DocumentRejection("create_parametric_family", expected, actual);
+            Assert.Equal(allowed, rejection == null);
+            if (!allowed) Assert.StartsWith("DOCUMENT_CHANGED:", rejection);
+            Assert.Equal(allowed, ToolReadPolicy.DocumentRejection("CREATE_PARAMETRIC_FAMILY", expected, actual, true) == null);
             Assert.StartsWith("PAIRING_REQUIRED:", ToolReadPolicy.DocumentRejection("create_parametric_family", null, actual, false));
-            Assert.Null(ToolReadPolicy.DocumentRejection("create_parametric_family", "doc-a", actual, false));
+            Assert.Equal(allowed && expected != null,
+                ToolReadPolicy.DocumentRejection("create_parametric_family", expected, actual, false) == null);
             Assert.Contains("READ_ONLY", ToolReadPolicy.Rejection("create_parametric_family", true, true));
+        }
+
+        [Fact]
+        public void Independent_family_authoring_rejects_a_changed_native_document_context()
+        {
+            using var context = new RvtMcp.Failures.DialogDocumentContext("family-policy-test-" + System.Guid.NewGuid().ToString("N"));
+            Assert.Null(RvtMcp.Failures.DialogDocumentContext.FamilyRejection(context, context.Stamp));
+            Assert.StartsWith("DOCUMENT_CONTEXT_CHANGED:",
+                RvtMcp.Failures.DialogDocumentContext.FamilyRejection(context, context.Stamp - 1));
+            context.Invalidate();
+            Assert.StartsWith("DOCUMENT_CONTEXT_CHANGED:",
+                RvtMcp.Failures.DialogDocumentContext.FamilyRejection(context, context.Stamp - 1));
+            Assert.StartsWith("DOCUMENT_CONTEXT_CHANGED:",
+                RvtMcp.Failures.DialogDocumentContext.FamilyRejection(null, 12));
         }
 
         [Fact]

@@ -4,6 +4,7 @@ using System.IO;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using FailureControl = RvtMcp.Plugin.Failures.FailureControl;
 using FamilyItemFactory = Autodesk.Revit.Creation.FamilyItemFactory;
 #endif
 using Autodesk.Revit.DB;
@@ -83,123 +84,136 @@ namespace RvtMcp.Plugin.Handlers
             var closeError = (string)null;
             CommandResult outcome;
             var stage = "opening the family template";
-            try
-            {
-                // NewFamilyDocument must be called by the add-in on Revit's UI thread.
-                familyDoc = app.Application.NewFamilyDocument(templatePath);
-                stage = "creating the native extrusion and parameter constraints";
-                if (familyDoc == null || !familyDoc.IsFamilyDocument)
-                    throw new InvalidOperationException("Revit did not open the supplied template as a family document.");
-
-                var dimensions = new[] { lengthMm, widthMm, heightMm };
-                object familyData;
-                using (var transaction = new Transaction(familyDoc, "RvtMcp: create parameterized extrusion"))
-                {
-                    if (transaction.Start() != TransactionStatus.Started)
-                        throw new InvalidOperationException("Could not start the family creation transaction.");
-                    try
-                    {
-                        stage = "creating the native extrusion and parameter constraints";
-                        var manager = familyDoc.FamilyManager;
-                        if (manager == null) throw new InvalidOperationException("The family template does not expose a FamilyManager.");
-                        stage = "selecting family type and creating Length, Width, Height parameters";
-                        var familyType = SelectType(manager, typeName);
-                        var parameters = CreateParameters(manager);
-                        SetValues(manager, parameters, dimensions);
-
-                        stage = "creating the extrusion sketch";
-                        var plan = SelectFamilyPlan(familyDoc);
-                        var plane = CreateWorkPlane(familyDoc);
-                        var extrusion = CreateExtrusion(familyDoc, plane, dimensions);
-                        if (extrusion == null) throw new InvalidOperationException("Revit did not create the extrusion.");
-                        var start = extrusion.get_Parameter(BuiltInParameter.EXTRUSION_START_PARAM);
-                        if (start == null || Math.Abs(start.AsDouble()) > 1e-8)
-                            throw new InvalidOperationException("The extrusion did not start at the work-plane origin (zero).");
-
-                        stage = "associating extrusion and labelled dimensions";
-                        var constraints = AssociateExtrusionParameters(familyDoc, manager, parameters, extrusion, dimensions, ref stage);
-                        stage = "regenerating and reading back native geometry";
-                        familyDoc.Regenerate();
-                        familyData = ReadBack(familyDoc, manager, parameters, extrusion, constraints, familyName, typeName, dimensions);
-                        stage = "committing the family creation transaction";
-                        if (transaction.Commit() != TransactionStatus.Committed)
-                            throw new InvalidOperationException("Revit did not commit the family creation transaction.");
-                    }
-                    catch
-                    {
-                        if (transaction.GetStatus() == TransactionStatus.Started) transaction.RollBack();
-                        throw;
-                    }
-                }
-
-                if (File.Exists(outputPath)) // A second guard immediately before the native save.
-                    throw new IOException("output_path already exists. This tool never overwrites an existing .rfa file.");
-                stage = "saving the temporary family";
-                // Save only a uniquely named temporary .rfa. The final same-volume rename is
-                // atomic and non-overwriting on Windows; failures can safely delete our own temp file.
-                familyDoc.SaveAs(temporaryPath, new SaveAsOptions { OverwriteExistingFile = false });
-                if (!File.Exists(temporaryPath)) throw new IOException("Revit did not create the temporary family file.");
-                closeAttempted = true;
-                if (!familyDoc.Close(false)) throw new IOException("Revit did not close the temporary family document.");
-                familyDoc = null;
-                closed = true;
-                stage = "renaming the temporary family to output_path";
-                File.Move(temporaryPath, outputPath);
-                saved = true;
-                var result = JObject.FromObject(familyData);
-                result["created"] = true;
-                result["saved"] = true;
-                result["output_path"] = outputPath;
-                result["file_size_bytes"] = new FileInfo(outputPath).Length;
-                result["host_verification"] = "in_revit_2027";
-                outcome = CommandResult.Ok(result);
-            }
-            catch (Exception ex)
-            {
-                if (saved)
-                {
-                    // The final rename succeeded but a later read failed: do not misreport it as no file.
-                    outcome = CommandResult.Fail("The family file was saved, but its response could not be completed. Inspect output_path before retrying: " + ex.Message);
-                }
-                else
-                {
-                    if (!closed && !closeAttempted && familyDoc != null)
-                    {
-                        closeAttempted = true;
-                        try
-                        {
-                            closed = familyDoc.Close(false);
-                            if (!closed) closeError = "Revit returned false when closing the family document.";
-                        }
-                        catch (Exception closeException) { closeError = closeException.Message; }
-                    }
-                    var cleanupError = closed || familyDoc == null
-                        ? ParametricFamilyInput.DeleteTemporaryFile(temporaryPath)
-                        : "The family document did not close; its temporary file was retained for inspection at " + temporaryPath + ".";
-                    outcome = CommandResult.Fail("Family creation failed; no requested output file was written. "
-                        + (closed ? "The family document was closed without saving to output_path. "
-                            : familyDoc == null ? "No family document was opened or it was already closed. "
-                            : "The family document could not be closed. ")
-                        + (cleanupError == null ? "No temporary or output file was left behind. " : cleanupError + " ")
-                        + (closeError == null ? "" : closeError + " ") + "Failure stage: " + stage + ". " + ex.Message);
-                }
-            }
-            if (!closed && !closeAttempted && familyDoc != null)
+            using (McpDocument.Begin(app))
             {
                 try
                 {
+                    // TrackOpened must run before any failure/save/close event for this new document.
+                    // Begin snapshots all pre-existing documents, so a user's family is never owned.
+                    familyDoc = McpDocument.TrackOpened(app.Application.NewFamilyDocument(templatePath));
+                    stage = "creating the native extrusion and parameter constraints";
+                    if (familyDoc == null || !familyDoc.IsFamilyDocument)
+                        throw new InvalidOperationException("Revit did not open the supplied template as a family document.");
+
+                    var dimensions = new[] { lengthMm, widthMm, heightMm };
+                    object familyData;
+                    using (var transaction = new Transaction(familyDoc, "RvtMcp: create parameterized extrusion"))
+                    {
+                        if (transaction.Start() != TransactionStatus.Started)
+                            throw new InvalidOperationException("Could not start the family creation transaction.");
+                        try
+                        {
+                            stage = "creating the native extrusion and parameter constraints";
+                            var manager = familyDoc.FamilyManager;
+                            if (manager == null) throw new InvalidOperationException("The family template does not expose a FamilyManager.");
+                            stage = "selecting family type and creating Length, Width, Height parameters";
+                            var familyType = SelectType(manager, typeName);
+                            var parameters = CreateParameters(manager);
+                            SetValues(manager, parameters, dimensions);
+
+                            stage = "creating the extrusion sketch";
+                            var plan = SelectFamilyPlan(familyDoc);
+                            var plane = CreateWorkPlane(familyDoc);
+                            var extrusion = CreateExtrusion(familyDoc, plane, dimensions);
+                            if (extrusion == null) throw new InvalidOperationException("Revit did not create the extrusion.");
+                            var start = extrusion.get_Parameter(BuiltInParameter.EXTRUSION_START_PARAM);
+                            if (start == null || Math.Abs(start.AsDouble()) > 1e-8)
+                                throw new InvalidOperationException("The extrusion did not start at the work-plane origin (zero).");
+
+                            stage = "associating extrusion and labelled dimensions";
+                            var constraints = AssociateExtrusionParameters(familyDoc, manager, parameters, extrusion, dimensions, ref stage);
+                            stage = "regenerating and reading back native geometry";
+                            familyDoc.Regenerate();
+                            familyData = ReadBack(familyDoc, manager, parameters, extrusion, constraints, familyName, typeName, dimensions);
+                            stage = "committing the family creation transaction";
+                            if (transaction.Commit() != TransactionStatus.Committed)
+                                throw new InvalidOperationException("Revit did not commit the family creation transaction.");
+                        }
+                        catch
+                        {
+                            if (transaction.GetStatus() == TransactionStatus.Started) transaction.RollBack();
+                            throw;
+                        }
+                    }
+
+                    if (File.Exists(outputPath) || Directory.Exists(outputPath)) // A second guard immediately before the native save.
+                        throw new IOException("output_path already exists. This tool never overwrites an existing file or directory.");
+                    stage = "saving the temporary family";
+                    // Save only a uniquely named temporary .rfa. The final same-volume rename is
+                    // atomic and non-overwriting on Windows. The typed one-shot authorization is
+                    // checked by FailureControl's real SavingAs event, not a caller-supplied grant.
+                    using (FailureControl.AuthorizeFamilySave(familyDoc, temporaryPath))
+                        familyDoc.SaveAs(temporaryPath, new SaveAsOptions { OverwriteExistingFile = false });
+                    FailureControl.ThrowIfStopped();
+                    if (!File.Exists(temporaryPath)) throw new IOException("Revit did not create the temporary family file.");
+                    if (IsActiveDocument(app, familyDoc))
+                        throw new IOException("The saved temporary family is Revit's active document and cannot be closed through Document.Close. It remains open for user review; the requested output was not written.");
                     closeAttempted = true;
-                    if (!familyDoc.Close(false)) closeError = "Revit returned false when closing the family document.";
+                    if (!McpDocument.Close(familyDoc, false))
+                        throw new IOException("Revit did not close the temporary family document. The saved temporary file was retained; the requested output was not written.");
+                    familyDoc = null;
+                closed = true;
+                    stage = "renaming the temporary family to output_path";
+                    File.Move(temporaryPath, outputPath);
+                    saved = true;
+                    var result = JObject.FromObject(familyData);
+                    result["created"] = true;
+                    result["saved"] = true;
+                    result["output_path"] = outputPath;
+                    result["file_size_bytes"] = new FileInfo(outputPath).Length;
+                    result["host_verification"] = "in_revit_2027";
+                    result["native_commit"] = "temporary_rfa_saved";
+                    result["file_output"] = "non_overwriting_rename";
+                    result["document_cleanup"] = "closed";
+                    outcome = CommandResult.Ok(result);
                 }
-                catch (Exception closeException) { closeError = closeException.Message; }
+                catch (Exception ex)
+                {
+                    if (saved)
+                    {
+                        outcome = CommandResult.Fail("The requested family file was created by a non-overwriting rename, but its response could not be completed. Inspect output_path before retrying: " + ex.Message);
+                    }
+                    else
+                    {
+                        if (!closed && !closeAttempted && familyDoc != null)
+                        {
+                            closeAttempted = true;
+                            if (IsActiveDocument(app, familyDoc))
+                            {
+                                // RevitAPI Document.Close explicitly rejects the active document.
+                                // Never activate another document or close the user's document to force cleanup.
+                                closeError = "The new family is Revit's active document, which Document.Close cannot close. It remains open for user review; the requested output was not written.";
+                            }
+                            else
+                            {
+                                try
+                                {
+                                    closed = McpDocument.Close(familyDoc, false);
+                                    if (!closed) closeError = "Revit returned false when closing the family document.";
+                                }
+                                catch (Exception closeException) { closeError = closeException.Message; }
+                            }
+                        }
+                        var cleanupError = closed || familyDoc == null
+                            ? ParametricFamilyInput.DeleteTemporaryFile(temporaryPath)
+                            : "The owned family document remains open; its temporary file, if created, was retained for inspection at " + temporaryPath + ".";
+                        outcome = CommandResult.Fail("Family creation failed; no requested output file was written. "
+                            + (closed ? "The family document was closed without saving to output_path. "
+                                : familyDoc == null ? "No family document was opened or it was already closed. "
+                                : "The family document was not closed; see the lifecycle detail. ")
+                            + (cleanupError == null ? "No temporary or output file was left behind. " : cleanupError + " ")
+                            + (closeError == null ? "" : closeError + " ") + "Failure stage: " + stage + ". " + ex.Message);
+                    }
+                }
             }
-            if (saved && closeError != null)
-                return CommandResult.Fail("The family was saved, but the temporary family document could not be closed. Inspect Revit and output_path before retrying. " + closeError);
             return outcome;
 #endif
         }
 
 #if REVIT2027
+
+        private static bool IsActiveDocument(UIApplication app, Document document)
+            => app.ActiveUIDocument?.Document != null && app.ActiveUIDocument.Document.Equals(document);
 
         private static FamilyType SelectType(FamilyManager manager, string typeName)
         {
@@ -223,7 +237,7 @@ namespace RvtMcp.Plugin.Handlers
             for (var i = 0; i < names.Length; i++)
             {
                 var existing = manager.GetParameters().FirstOrDefault(p => p.Definition.Name == names[i]);
-                if (existing != null && (existing.IsInstance || existing.StorageType != StorageType.Double
+                if (existing != null && (existing.IsInstance || existing.IsReporting || existing.StorageType != StorageType.Double
                     || existing.GetUnitTypeId() != SpecTypeId.Length
                     || existing.Formula != null || existing.AssociatedParameters.Size != 0))
                     throw new InvalidOperationException("The family template has an incompatible or already-used parameter named " + names[i] + ".");
@@ -430,8 +444,11 @@ namespace RvtMcp.Plugin.Handlers
             if (constraints.Dimensions.Count != 2 || alignmentCount != 4
                 || constraints.Equalities.Count != 2 || constraints.Equalities.Any(d => !d.AreSegmentsEqual))
                 throw new InvalidOperationException("Native constraint read-back did not find two labelled dimensions, two origin EQ constraints and four locked alignments.");
-            var solidCount = extrusion.get_Geometry(new Options()).OfType<Solid>().Count(s => s.Volume > 0);
-            if (solidCount == 0) throw new InvalidOperationException("The regenerated extrusion has no positive-volume solid.");
+            var solids = extrusion.get_Geometry(new Options())?.OfType<Solid>()
+                .Where(s => s.IsElementGeometry && s.Volume > 0).ToArray();
+            if (solids == null || solids.Length == 0)
+                throw new InvalidOperationException("The regenerated Extrusion has no positive-volume solid in its own element geometry.");
+            var solidCount = solids.Length;
             var namedPlanes = new FilteredElementCollector(doc).OfClass(typeof(ReferencePlane)).Cast<ReferencePlane>()
                 .Count(p => p.Name != null && p.Name.StartsWith("RvtMcp ", StringComparison.Ordinal));
             if (namedPlanes != 4) throw new InvalidOperationException("Native reference-plane read-back did not find the four required planes.");

@@ -14,7 +14,8 @@ public sealed class CreateParametricFamilyHandlerTests
 {
     private static readonly Lazy<Func<string, JObject>> R27Probe = new(() => HandlerProbe.Compile(R27Seam,
         new[] { "src/shared/Handlers/Families/CreateParametricFamilyHandler.cs",
-            "src/shared/Handlers/Families/ParametricFamilyInput.cs", "src/shared/Infrastructure/RevitCompat.cs" },
+            "src/shared/Handlers/Families/ParametricFamilyInput.cs", "src/shared/Infrastructure/RevitCompat.cs",
+            "src/shared/Infrastructure/McpDocument.cs", "src/shared/Handlers/Documents/OpenModelLocalPolicy.cs" },
         symbols: new[] { "REVIT2027", "REVIT2024_OR_GREATER", "REVIT2027_OR_GREATER" }));
 
     private static readonly Lazy<Func<string, JObject>> R22Probe = new(() => HandlerProbe.Compile(UnsupportedSeam,
@@ -57,7 +58,7 @@ public sealed class CreateParametricFamilyHandlerTests
     [Theory]
     [InlineData("geometry_failure", 0)]
     [InlineData("template_failure", 0)]
-    [InlineData("save_failure", 1)]
+    [InlineData("save_failure", 0)]
     [InlineData("profile_wrapper_failure", 0)]
     public void Failure_never_saves_a_partial_family_and_closes_any_owned_document(string scenario, int saves)
     {
@@ -72,6 +73,28 @@ public sealed class CreateParametricFamilyHandlerTests
             Assert.Equal(1, result.Value<int>("transaction_rollbacks"));
         Assert.Equal(scenario == "template_failure" ? 0 : 1, result.Value<int>("document_closes"));
         Assert.Empty(result["temporary_files"]!);
+    }
+
+    [Fact]
+    public void Active_family_is_never_closed_and_temporary_file_is_retained_for_review()
+    {
+        var result = R27Probe.Value("active_document");
+        Assert.False(result.Value<bool>("success"));
+        Assert.Contains("active document", result.Value<string>("error"));
+        Assert.Contains("remains open for user review", result.Value<string>("error"));
+        Assert.Contains("no requested output file was written", result.Value<string>("error"));
+        Assert.Equal(0, result.Value<int>("document_closes"));
+        Assert.False(result.Value<bool>("output_exists"));
+        Assert.Single(result["temporary_files"]!);
+    }
+
+    [Fact]
+    public void Solid_readback_requires_the_extrusions_own_positive_volume_element_geometry()
+    {
+        var result = R27Probe.Value("foreign_geometry");
+        Assert.False(result.Value<bool>("success"));
+        Assert.Contains("own element geometry", result.Value<string>("error"));
+        Assert.False(result.Value<bool>("output_exists"));
     }
 
     [Fact]
@@ -90,7 +113,7 @@ public sealed class CreateParametricFamilyHandlerTests
     {
         var result = R27Probe.Value(scenario);
         Assert.False(result.Value<bool>("success"));
-        Assert.Contains("could not be closed", result.Value<string>("error"));
+        Assert.Contains("The family document was not closed", result.Value<string>("error"));
         Assert.Contains("retained for inspection", result.Value<string>("error"));
         Assert.False(result.Value<bool>("output_exists"));
         Assert.Single(result["temporary_files"]!);
@@ -112,6 +135,7 @@ public sealed class CreateParametricFamilyHandlerTests
     [InlineData("existing_text")]
     [InlineData("existing_formula")]
     [InlineData("existing_associated")]
+    [InlineData("existing_reporting")]
     public void Incompatible_existing_parameters_are_not_overwritten(string scenario)
     {
         var result = R27Probe.Value(scenario);
@@ -204,10 +228,10 @@ namespace Autodesk.Revit.DB {
  public class Parameter { public bool IsReadOnly; public double Value; public Definition Definition; public double AsDouble()=>Value; }
  public class ParameterSet { public int Size; }
  public class FamilyParameter:Element { public FamilyParameter(Document d,string name):base(d){Definition=new Definition{Name=name};Name=name;}
-  public Definition Definition; public double Value; public bool IsInstance; public StorageType StorageType=StorageType.Double; public object Unit=SpecTypeId.Length; public string Formula;
+  public Definition Definition; public double Value; public bool IsInstance; public bool IsReporting; public StorageType StorageType=StorageType.Double; public object Unit=SpecTypeId.Length; public string Formula;
   public ParameterSet AssociatedParameters=new ParameterSet(); public object GetUnitTypeId()=>Unit; }
- public class Solid { public double Volume=1; }
- public class GeometryElement:IEnumerable<Solid> { public IEnumerator<Solid> GetEnumerator(){yield return new Solid();} IEnumerator IEnumerable.GetEnumerator()=>GetEnumerator(); }
+ public class Solid { public double Volume=1; public bool IsElementGeometry=true; }
+ public class GeometryElement:IEnumerable<Solid> { public IEnumerator<Solid> GetEnumerator(){yield return new Solid{IsElementGeometry=Document.Scenario!="foreign_geometry"};} IEnumerator IEnumerable.GetEnumerator()=>GetEnumerator(); }
  public class Options { }
  public class Extrusion:Element { public Extrusion(Document d):base(d){Sketch=new Sketch(d);} public Sketch Sketch; public double Height;
   private Parameter End=new Parameter(); private Parameter Start=new Parameter();
@@ -222,7 +246,7 @@ namespace Autodesk.Revit.DB {
   public IEnumerator<FamilyType> GetEnumerator()=>Items.GetEnumerator(); IEnumerator IEnumerable.GetEnumerator()=>GetEnumerator(); }
  public class FamilyManager { private Document Doc; public FamilyManager(Document d){Doc=d;} public FamilyType CurrentType; public FamilyTypeSet Types=new FamilyTypeSet();
   public List<FamilyParameter> Parameters=new List<FamilyParameter>(); public FamilyParameter[] GetParameters()=>Parameters.Select(p=>new FamilyParameter(Doc,p.Name){
-   Id=p.Id,Value=p.Value,IsInstance=p.IsInstance,StorageType=p.StorageType,Unit=p.Unit,Formula=p.Formula,AssociatedParameters=p.AssociatedParameters}).ToArray();
+   Id=p.Id,Value=p.Value,IsInstance=p.IsInstance,IsReporting=p.IsReporting,StorageType=p.StorageType,Unit=p.Unit,Formula=p.Formula,AssociatedParameters=p.AssociatedParameters}).ToArray();
   public FamilyParameter AddParameter(string n,object g,object s,bool i){Doc.NewParameters++;var p=new FamilyParameter(Doc,n);Parameters.Add(p);return Copy(p);}
   public FamilyType NewType(string n){Doc.NewTypes++;CurrentType=new FamilyType(n);Types.Items.Add(CurrentType);return CurrentType;}
   public void Set(FamilyParameter p,double v){Parameters.Single(x=>x.Id.Value==p.Id.Value).Value=v;Doc.SetValues++;}
@@ -249,9 +273,9 @@ namespace Autodesk.Revit.DB {
    if(Scenario.StartsWith("existing_")){FamilyManager.CurrentType=new FamilyType("Standard");FamilyManager.Types.Items.Add(FamilyManager.CurrentType);
     foreach(var n in new[]{"Length","Width","Height"}){var p=new FamilyParameter(this,n);FamilyManager.Parameters.Add(p);
      if(Scenario=="existing_instance")p.IsInstance=true;if(Scenario=="existing_text")p.StorageType=StorageType.String;
-     if(Scenario=="existing_formula")p.Formula="1 ft";if(Scenario=="existing_associated")p.AssociatedParameters.Size=1;}}
+     if(Scenario=="existing_formula")p.Formula="1 ft";if(Scenario=="existing_associated")p.AssociatedParameters.Size=1;if(Scenario=="existing_reporting")p.IsReporting=true;}}
    var first=FamilyManager.GetParameters().FirstOrDefault();NewParameterWrappers=FamilyManager.GetParameters().Length==0||!ReferenceEquals(first,FamilyManager.GetParameters().First());}
-  public bool IsFamilyDocument=>true; public void Regenerate(){}
+  public bool IsFamilyDocument=>true; public bool IsValidObject=true; public bool IsWorkshared=>false; public void Regenerate(){}
   public Element GetElement(ElementId id)=>Items.Single(e=>e.Id.Value==id.Value);
   public void SaveAs(string path,SaveAsOptions o){Saves++;File.WriteAllText(path,"seam");SaveLock=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.None);LockedWhileSaved=true;
    if(Scenario=="save_failure"){SaveLock.Dispose();SaveLock=null;throw new Exception("save refused");}}
@@ -259,11 +283,13 @@ namespace Autodesk.Revit.DB {
   public bool Close(bool save){Closes++;if(Scenario=="close_exception")throw new Exception("close refused");if(Scenario=="close_false")return false;
    SaveLockReleasedOnClose=SaveLock!=null;SaveLock?.Dispose();SaveLock=null;return true;} }
 }
-namespace Autodesk.Revit.ApplicationServices { public class Application { public static int Opens; public Autodesk.Revit.DB.Document Last;
- public Autodesk.Revit.DB.Document NewFamilyDocument(string path){Opens++;if(Autodesk.Revit.DB.Document.Scenario=="template_failure")throw new Exception("bad template");return Last=new Autodesk.Revit.DB.Document();} } }
-namespace Autodesk.Revit.UI { public class UIApplication { public Autodesk.Revit.ApplicationServices.Application Application=new Autodesk.Revit.ApplicationServices.Application(); } }
+namespace Autodesk.Revit.ApplicationServices { public class Application { public static int Opens; public Autodesk.Revit.DB.Document Last; public Autodesk.Revit.UI.UIApplication Owner;
+ public Autodesk.Revit.DB.Document NewFamilyDocument(string path){Opens++;if(Autodesk.Revit.DB.Document.Scenario=="template_failure")throw new Exception("bad template");Last=new Autodesk.Revit.DB.Document();Documents.Add(Last);if(Autodesk.Revit.DB.Document.Scenario=="active_document")Owner.ActiveUIDocument=new Autodesk.Revit.UI.UIDocument{Document=Last};return Last;} public System.Collections.Generic.List<Autodesk.Revit.DB.Document> Documents=new System.Collections.Generic.List<Autodesk.Revit.DB.Document>(); } }
+namespace Autodesk.Revit.UI { public class UIDocument { public Autodesk.Revit.DB.Document Document; } public class UIApplication { public Autodesk.Revit.ApplicationServices.Application Application=new Autodesk.Revit.ApplicationServices.Application(); public UIDocument ActiveUIDocument; public UIApplication(){Application.Owner=this;} } }
 namespace RvtMcp.Plugin { public interface IRevitCommand {} public class CommandResult { public bool Success; public string Error; public object Data;
  public static CommandResult Ok(object data)=>new CommandResult{Success=true,Data=data}; public static CommandResult Fail(string error)=>new CommandResult{Error=error}; } }
+namespace RvtMcp.Plugin.Failures { public static class FailureControl { public static IDisposable AuthorizeFamilySave(Autodesk.Revit.DB.Document doc,string path) { if(Autodesk.Revit.DB.Document.Scenario=="save_failure")throw new Exception("native save authorization refused");return null; }
+ public static void ThrowIfStopped(){} } }
 public static class Probe { public static string Run(string scenario){
  Autodesk.Revit.DB.Document.Scenario=scenario; Autodesk.Revit.ApplicationServices.Application.Opens=0;
  var dir=Path.Combine(Path.GetTempPath(),"rvtmcp-family-probe-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(dir);Autodesk.Revit.DB.Document doc=null;

@@ -40,6 +40,15 @@ namespace RvtMcp.Failures
                 throw new InvalidOperationException("DOCUMENT_CHANGED: Dialog declarations expired before dispatch. Review the active document and declare answers again.");
         }
 
+        internal static string FamilyRejection(DialogDocumentContext context, long? expectedStamp)
+        {
+            // Older/newer mismatched shells must fail closed: absence of the shared stamp
+            // cannot prove the document/Home context stayed unchanged until execution.
+            if (context == null || context.Stamp != expectedStamp)
+                return "DOCUMENT_CONTEXT_CHANGED: Revit's active document or view could not be proven unchanged since family target confirmation. The independent family was not started. Review and confirm the intended target with revit_switch_target(verify=true).";
+            return null;
+        }
+
         internal static long? Read(string target)
         {
 #if NET5_0_OR_GREATER

@@ -61,6 +61,25 @@ public sealed class ParametricFamilyInputTests : IDisposable
         Assert.Equal("existing family", File.ReadAllText(_output));
     }
 
+    [Fact]
+    public void Existing_output_directory_is_never_replaced()
+    {
+        Directory.CreateDirectory(_output);
+        File.WriteAllText(Path.Combine(_output, "keep.txt"), "user data");
+        Assert.Contains("never overwrites", Validate());
+        Assert.True(File.Exists(Path.Combine(_output, "keep.txt")));
+    }
+
+    [Fact]
+    public void Mapped_network_drive_is_rejected_by_the_shared_path_policy()
+    {
+        var substituted = OpenModelLocalPolicy.NormalizePath(_output).StartsWith(@"\\", StringComparison.Ordinal);
+        // The input policy uses the exact WNetGetConnection expansion used by document/file writes.
+        // Only assert a mapped-drive result when this machine actually exposes such a drive.
+        if (!substituted) return;
+        Assert.Contains("mapped network drives", Validate());
+    }
+
     [Theory]
     [InlineData("Cabinet.rvt", ".rfa")]
     [InlineData(@"C:relative.rfa", "full local path")]

@@ -59,7 +59,11 @@ namespace RvtMcp.Plugin.Failures
         }
 
         // A model opening, closing or view change makes a window's model uncertain until the next idle snapshot.
-        private static void BumpContextGeneration() { Interlocked.Increment(ref _contextGeneration); }
+        private static void BumpContextGeneration()
+        {
+            Interlocked.Increment(ref _contextGeneration);
+            try { DialogContext?.Invalidate(); } catch { }
+        }
 
         private static void UpdateContextSnapshot(Autodesk.Revit.DB.Document doc, string modelScopeKey)
         {

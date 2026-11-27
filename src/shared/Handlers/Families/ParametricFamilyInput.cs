@@ -39,10 +39,13 @@ namespace RvtMcp.Plugin.Handlers
             var outputDirectory = Path.GetDirectoryName(outputPath);
             if (string.IsNullOrWhiteSpace(outputDirectory) || !Directory.Exists(outputDirectory))
                 return "The parent directory of output_path must already exist; it is not created automatically.";
-            if (File.Exists(outputPath))
-                return "output_path already exists. This tool never overwrites an existing .rfa file; choose a new path.";
+            if (File.Exists(outputPath) || Directory.Exists(outputPath))
+                return "output_path already exists. This tool never overwrites an existing file or directory; choose a new .rfa path.";
             return null;
         }
+
+        internal static string TemporaryOutputDirectory(string outputPath)
+            => Path.GetDirectoryName(Path.GetFullPath(outputPath));
 
         internal static string TemporaryOutputPath(string outputPath)
         {
@@ -102,8 +105,8 @@ namespace RvtMcp.Plugin.Handlers
                     return parameter + " must be a full local path beginning with a drive letter.";
                 if (!string.Equals(Path.GetExtension(full), extension, StringComparison.OrdinalIgnoreCase))
                     return parameter + " must have the " + extension + " extension.";
-                if (full.StartsWith(@"\\", StringComparison.Ordinal) || full.StartsWith("//", StringComparison.Ordinal))
-                    return parameter + " must be on a local drive; network paths are not written or read.";
+                if (OpenModelLocalPolicy.NormalizePath(full).StartsWith(@"\\", StringComparison.Ordinal))
+                    return parameter + " must be on a local drive; mapped network drives are not written or read.";
                 if (mustExist && !File.Exists(full))
                     return "The family template does not exist. Supply the absolute path of an installed Revit family template (.rft).";
                 return null;

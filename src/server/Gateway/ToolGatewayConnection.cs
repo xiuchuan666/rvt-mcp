@@ -77,6 +77,19 @@ namespace RvtMcp.Server
         internal static Action BeforeWriteForTests;
         private static readonly DialogAnswerSession DialogAnswers = new DialogAnswerSession();
 
+        // Capture the add-in's shared native activation stamp before dispatch. Unlike the
+        // gateway binding generation this changes when the user opens/closes/activates a
+        // document in Revit, so a queued family call cannot reuse an A confirmation for B.
+        internal static Func<string, long?> ReadContextStampForTests { get; set; }
+        internal static long? FamilyContextStamp()
+        {
+            var record = RevitTargetBinding.Snapshot().Record;
+            if (record == null) return null;
+            return ReadContextStampForTests != null
+                ? ReadContextStampForTests(record.TargetId)
+                : DialogDocumentContext.Read(record.TargetId);
+        }
+
         internal static JObject ConfigureDialogAnswers(JArray answers, string scope, bool clear)
         {
             lock (_connectLock)
@@ -664,6 +677,7 @@ namespace RvtMcp.Server
                     // Lets the add-in tell an unconfirmed document from a gateway that predates confirmation.
                     document_protocol = 1,
                     expected_document_id = binding.Snapshot().Record?.DocumentId,
+                    expected_context_generation = command == "create_parametric_family" ? FamilyContextStamp() : (long?)null,
                     script_protocol = script == null ? (int?)null : ScriptLimits.ProtocolVersion,
                     script
                 }, JsonSerializer.Create(RequestJsonSettings));

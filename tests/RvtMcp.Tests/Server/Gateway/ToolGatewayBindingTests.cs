@@ -17,6 +17,7 @@ using RvtMcp.Server;
 using Xunit;
 using ServerAuthToken = RvtMcp.Server.AuthToken;
 using RvtMcp.Scripting;
+using RvtMcp.Failures;
 
 namespace RvtMcp.Tests
 {
@@ -167,6 +168,15 @@ namespace RvtMcp.Tests
                             lock (Requests) Requests.Add(req);
                             var documentError = TargetStamp == null ? null : ToolReadPolicy.DocumentRejection(command,
                                 req.Value<string>("expected_document_id"), TargetStamp.Value<string>("document_id"));
+                            if (command == "create_parametric_family" && documentError == null)
+                            {
+                                var target = TargetStamp?.Value<string>("target_id") ?? "";
+                                var stamp = ToolGateway.ReadContextStampForTests != null
+                                    ? ToolGateway.ReadContextStampForTests(target)
+                                    : DialogDocumentContext.Read(target);
+                                documentError = stamp == req.Value<long?>("expected_context_generation") ? null
+                                    : "DOCUMENT_CONTEXT_CHANGED: family context changed before execution.";
+                            }
                             if (documentError != null)
                             {
                                 writer.WriteLine(new JObject { ["id"] = id, ["success"] = false, ["error"] = documentError,
@@ -343,6 +353,58 @@ namespace RvtMcp.Tests
             reply["id"] = request["id"].DeepClone(); reply["_target"] = target.DeepClone();
             reply["_operation"]["operationId"] = request["operation_id"].DeepClone();
             return reply;
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("doc-a")]
+        public async Task Family_creation_carries_native_context_stamp_and_rejects_confirmation_a_then_b(string confirmedDocument)
+        {
+            var targetId = "revit-2024-" + PidA;
+            using var context = new DialogDocumentContext(targetId);
+            using var host = new FakeTcpHost { TargetStamp = new JObject {
+                ["target_id"] = targetId, ["host_year"] = 2024, ["pid"] = PidA, ["document_id"] = confirmedDocument } };
+            _probe.Set(PidA, ProcessState.Running, StartA);
+            WritePerInstanceDescriptor(PidA, 2024, StartA, "tcp", host.Port, null, "tok");
+            RevitTargetBinding.ResetForTests(_probe, TargetSelector.ForPid(PidA));
+            RevitTargetBinding.Switch(TargetSelector.ForPid(PidA), RevitTargetBinding.Scan().Live);
+            RevitTargetBinding.Binding.ConfirmDocument(RevitTargetBinding.CaptureGeneration(), confirmedDocument);
+
+            var success = await Send("create_parametric_family");
+            Assert.True(success.Value<bool>("ok"), success.ToString());
+            var request = Assert.Single(host.Requests);
+            Assert.Equal(context.Stamp, request.Value<long>("expected_context_generation"));
+            Assert.Equal(confirmedDocument, request.Value<string>("expected_document_id"));
+
+            // Real gateway + shared-memory + NDJSON sequence: confirmed A cannot execute after B.
+            context.Invalidate();
+            host.TargetStamp["document_id"] = "doc-b";
+            var changed = await Send("create_parametric_family");
+            Assert.StartsWith("DOCUMENT_CHANGED:", changed.Value<string>("error"));
+            Assert.Equal(1, host.Commands.Count(c => c == "create_parametric_family"));
+
+            context.Invalidate();
+            host.TargetStamp["document_id"] = confirmedDocument;
+            host.ResponseOverride = req => {
+                var current = DialogDocumentContext.Read(targetId);
+                var expected = req.Value<long?>("expected_context_generation");
+                if (current == expected) return new JObject { ["id"] = req["id"], ["success"] = true, ["data"] = new JObject { ["ok"] = true } };
+                return new JObject { ["id"] = req["id"], ["success"] = false,
+                    ["error"] = "DOCUMENT_CONTEXT_CHANGED: family context changed before execution.",
+                    ["_operation"] = new JObject { ["outcome"] = "not_started", ["mutationApplied"] = false } };
+            };
+            // Model the exact queue delay that must reject a stale dispatch: the native
+            // stamp changes after WriteLine but before the host evaluates its execution guard.
+            var stamp = context.Stamp;
+            var reads = 0;
+            var previousRead = ToolGateway.ReadContextStampForTests;
+            ToolGateway.ReadContextStampForTests = _ => ++reads == 2 ? stamp + 1 : stamp;
+            JObject expired;
+            try { expired = await Send("create_parametric_family"); }
+            finally { ToolGateway.ReadContextStampForTests = previousRead; }
+            Assert.StartsWith("DOCUMENT_CONTEXT_CHANGED:", expired.Value<string>("error"));
+            Assert.Equal(1, host.Commands.Count(c => c == "create_parametric_family"));
+
         }
 
         [Theory]

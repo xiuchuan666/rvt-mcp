@@ -143,12 +143,10 @@ namespace RvtMcp.Plugin.Handlers
                             AlignSketchCurvesToPlanes(familyDoc, plan, extrusion, leftPlane, rightPlane, frontPlane, backPlane);
                             familyDoc.Regenerate();
 
-                            stage = "creating labelled Length dimension";
-                            var lengthDim = CreateLabelledDimension(familyDoc, plan, leftPlane, rightPlane,
-                                new XYZ(-halfLength, 0, 0), new XYZ(halfLength, 0, 0), parameters["Length"]);
-                            stage = "creating labelled Width dimension";
-                            var widthDim = CreateLabelledDimension(familyDoc, plan, frontPlane, backPlane,
-                                new XYZ(0, -halfWidth, 0), new XYZ(0, halfWidth, 0), parameters["Width"]);
+                            stage = "creating labelled Length dimension from sketch curve references";
+                            CreateLabelledDimensionFromCurves(familyDoc, plan, extrusion, isLength: true, parameters["Length"]);
+                            stage = "creating labelled Width dimension from sketch curve references";
+                            CreateLabelledDimensionFromCurves(familyDoc, plan, extrusion, isLength: false, parameters["Width"]);
                             familyDoc.Regenerate();
 
                             stage = "associating extrusion Height";
@@ -402,12 +400,45 @@ namespace RvtMcp.Plugin.Handlers
             alignment.IsLocked = true;
         }
 
-        private static Dimension CreateLabelledDimension(Document doc, ViewPlan plan,
-            ReferencePlane first, ReferencePlane second, XYZ dimStart, XYZ dimEnd, FamilyParameter labelParam)
+        /// <summary>
+        /// Creates a labelled dimension from sketch ModelCurve geometric references.
+        /// FamilyLabel requires genuine geometric references (ModelCurve.GeometryCurve.Reference
+        /// with ':0:LINEAR' suffix), not plain ReferencePlane references.
+        /// </summary>
+        private static Dimension CreateLabelledDimensionFromCurves(Document doc, ViewPlan plan,
+            Extrusion extrusion, bool isLength, FamilyParameter labelParam)
         {
+            var sketchCurves = extrusion.Sketch.GetAllElements()
+                .Select(id => doc.GetElement(id) as ModelCurve)
+                .Where(mc => mc?.GeometryCurve is Line)
+                .Select(mc => new { Curve = mc, Line = (Line)mc.GeometryCurve })
+                .ToList();
+
+            // Length: vertical lines (Y-direction); Width: horizontal lines (X-direction)
+            var axisLines = isLength
+                ? sketchCurves.Where(mc => Math.Abs(mc.Line.Direction.Y) > 0.99).OrderBy(mc => mc.Line.GetEndPoint(0).X).ToList()
+                : sketchCurves.Where(mc => Math.Abs(mc.Line.Direction.X) > 0.99).OrderBy(mc => mc.Line.GetEndPoint(0).Y).ToList();
+
+            if (axisLines.Count < 2)
+                throw new InvalidOperationException("Insufficient sketch lines for " + (isLength ? "Length" : "Width") + " dimension.");
+
+            var firstLine = axisLines.First();
+            var secondLine = axisLines.Last();
+            var firstRef = firstLine.Curve.GeometryCurve?.Reference;
+            var secondRef = secondLine.Curve.GeometryCurve?.Reference;
+            if (firstRef == null || secondRef == null)
+                throw new InvalidOperationException("Sketch curve geometric reference is null for dimension.");
+
+            var dimStart = isLength
+                ? new XYZ(firstLine.Line.GetEndPoint(0).X, 0, 0)
+                : new XYZ(0, firstLine.Line.GetEndPoint(0).Y, 0);
+            var dimEnd = isLength
+                ? new XYZ(secondLine.Line.GetEndPoint(0).X, 0, 0)
+                : new XYZ(0, secondLine.Line.GetEndPoint(0).Y, 0);
+
             var refs = new ReferenceArray();
-            refs.Append(first.GetReference());
-            refs.Append(second.GetReference());
+            refs.Append(firstRef);
+            refs.Append(secondRef);
             var dim = doc.FamilyCreate.NewDimension(plan, Line.CreateBound(dimStart, dimEnd), refs);
             if (dim == null) throw new InvalidOperationException("NewDimension returned null.");
             dim.FamilyLabel = labelParam;

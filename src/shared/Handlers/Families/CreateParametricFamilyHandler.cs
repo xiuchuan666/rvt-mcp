@@ -342,7 +342,6 @@ namespace RvtMcp.Plugin.Handlers
             var plan = SelectFamilyPlan(doc);
             stage = "creating labelled Length and Width dimensions and origin EQ constraints";
             var constraints = CreateNamedPlanes(doc, plan, parameters, dimensions);
-            doc.Regenerate();
             stage = "locking native ModelCurve profile edges to reference planes";
             constraints.Alignments.AddRange(CreateExtrusionProfileConstraints(doc, plan, extrusion));
             return constraints;
@@ -358,13 +357,20 @@ namespace RvtMcp.Plugin.Handlers
             right.Name = "RvtMcp Right";
             var left = factory.NewReferencePlane(new XYZ(-halfLength, -2, 0), new XYZ(-halfLength, 2, 0), XYZ.BasisZ, plan);
             left.Name = "RvtMcp Left";
-            var dimension = factory.NewDimension(plan, Line.CreateBound(new XYZ(-halfLength, 0, 0), new XYZ(halfLength, 0, 0)), RefArray(left, right));
-            dimension.FamilyLabel = parameters["Length"];
             var front = factory.NewReferencePlane(new XYZ(-2, halfWidth, 0), new XYZ(2, halfWidth, 0), XYZ.BasisZ, plan);
             front.Name = "RvtMcp Front";
             var back = factory.NewReferencePlane(new XYZ(-2, -halfWidth, 0), new XYZ(2, -halfWidth, 0), XYZ.BasisZ, plan);
             back.Name = "RvtMcp Back";
-            var width = factory.NewDimension(plan, Line.CreateBound(new XYZ(0, -halfWidth, 0), new XYZ(0, halfWidth, 0)), RefArray(back, front));
+            // A newly created ReferencePlane does not yet expose a *geometric* reference that
+            // ItemFactoryBase.NewDimension accepts ("The references are not geometric references").
+            // Regenerate first so each plane's geometry exists, then re-read the elements and obtain
+            // the references from the resolved geometry rather than from the just-created wrappers.
+            doc.Regenerate();
+            var dimension = factory.NewDimension(plan, Line.CreateBound(new XYZ(-halfLength, 0, 0), new XYZ(halfLength, 0, 0)),
+                RefArray(PlaneReference(left), PlaneReference(right)));
+            dimension.FamilyLabel = parameters["Length"];
+            var width = factory.NewDimension(plan, Line.CreateBound(new XYZ(0, -halfWidth, 0), new XYZ(0, halfWidth, 0)),
+                RefArray(PlaneReference(back), PlaneReference(front)));
             width.FamilyLabel = parameters["Width"];
             var constraints = new ConstraintSet();
             constraints.Dimensions.Add(dimension);
@@ -374,6 +380,23 @@ namespace RvtMcp.Plugin.Handlers
             constraints.Equalities.Add(CreateOriginEquality(doc, factory, plan, back, front,
                 Line.CreateBound(new XYZ(0, -halfWidth, 0), new XYZ(0, halfWidth, 0)), false));
             return constraints;
+        }
+
+        // ReferencePlane.GetReference() is documented as the plane's geometry reference, but on a
+        // freshly created (not yet regenerated) plane it can yield a non-geometric reference that
+        // NewDimension rejects. Resolve the plane's own PlanarFace from its element geometry after
+        // regeneration and take that face's Reference, which is a genuine geometric reference and
+        // is also accepted by NewAlignment ("planar face and reference plane" / "2 planar faces").
+        private static Reference PlaneReference(ReferencePlane plane)
+        {
+            var geometry = plane.get_Geometry(new Options());
+            if (geometry != null)
+            {
+                foreach (var face in geometry.OfType<PlanarFace>())
+                    if (face.Reference != null) return face.Reference;
+            }
+            // Fallback to the element-level reference for templates whose planes expose no face here.
+            return plane.GetReference();
         }
 
         private static Dimension CreateOriginEquality(Document doc, FamilyItemFactory factory, ViewPlan plan,
@@ -390,9 +413,9 @@ namespace RvtMcp.Plugin.Handlers
             if (origin == null)
                 throw new InvalidOperationException("The family template must contain both center reference planes at the origin, as in a standard 3D family template.");
             var references = new ReferenceArray();
-            references.Append(first.GetReference());
-            references.Append(origin.GetReference());
-            references.Append(second.GetReference());
+            references.Append(PlaneReference(first));
+            references.Append(PlaneReference(origin));
+            references.Append(PlaneReference(second));
             var dimension = factory.NewDimension(plan, line, references);
             dimension.AreSegmentsEqual = true;
             if (!dimension.AreSegmentsEqual)
@@ -400,11 +423,11 @@ namespace RvtMcp.Plugin.Handlers
             return dimension;
         }
 
-        private static ReferenceArray RefArray(ReferencePlane first, ReferencePlane second)
+        private static ReferenceArray RefArray(Reference first, Reference second)
         {
             var result = new ReferenceArray();
-            result.Append(first.GetReference());
-            result.Append(second.GetReference());
+            result.Append(first);
+            result.Append(second);
             return result;
         }
 

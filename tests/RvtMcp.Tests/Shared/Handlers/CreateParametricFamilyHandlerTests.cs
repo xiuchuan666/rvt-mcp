@@ -196,6 +196,21 @@ public sealed class CreateParametricFamilyHandlerTests
     }
 
     [Fact]
+    public void Dimensions_require_regeneration_and_geometric_references_before_creation()
+    {
+        // Real Revit 2027 failure: "The references are not geometric references" when NewDimension
+        // receives ReferencePlane.GetReference() from planes that have not been regenerated. The seam
+        // now models that: a plane's element reference is non-geometric until Document.Regenerate()
+        // runs, after which its PlanarFace exposes a genuine geometric reference. The handler must
+        // regenerate after creating the four planes and before any NewDimension call.
+        var result = R27Probe.Value("success");
+        Assert.True(result.Value<bool>("success"), result.Value<string>("error"));
+        Assert.True(result.Value<bool>("dimensions_created_after_regeneration"));
+        Assert.Equal(3, result.Value<int>("labelled_dimensions_and_extrusion_associations"));
+        Assert.Equal(2, result.Value<int>("origin_equality_count"));
+    }
+
+    [Fact]
     public void Older_shells_return_unsupported_version_without_parsing_or_opening_a_document()
     {
         var result = R22Probe.Value("ignored");
@@ -227,6 +242,8 @@ namespace Autodesk.Revit.Creation { public class FamilyItemFactory { public Auto
  public Autodesk.Revit.DB.ReferencePlane NewReferencePlane(Autodesk.Revit.DB.XYZ a,Autodesk.Revit.DB.XYZ b,Autodesk.Revit.DB.XYZ c,Autodesk.Revit.DB.ViewPlan v){
   var p=new Autodesk.Revit.DB.ReferencePlane(Document,a,b,c); Document.Items.Add(p); return p; }
  public Autodesk.Revit.DB.Dimension NewDimension(Autodesk.Revit.DB.ViewPlan v,Autodesk.Revit.DB.Line l,Autodesk.Revit.DB.ReferenceArray r){
+  if(r.Items.Any(x=>x==null||!x.IsGeometric))throw new ArgumentException("The references are not geometric references. Parameter name: references");
+  Document.DimensionsAfterRegeneration++;
   var d=new Autodesk.Revit.DB.Dimension(Document,r.Items.Count); if(r.Items.Count==2)Document.Associations++; Document.Items.Add(d); return d; }
  public Autodesk.Revit.DB.Dimension NewAlignment(Autodesk.Revit.DB.ViewPlan v,Autodesk.Revit.DB.Reference a,Autodesk.Revit.DB.Reference b){
   if(a==null||b==null||b.Curve==null||(a.Curve!=null&&a.Curve!=b.Curve))throw new Exception("References must belong to the same native ModelCurve geometry.");
@@ -248,14 +265,23 @@ namespace Autodesk.Revit.DB {
  public class CurveArrArray { public List<CurveArray> Items=new List<CurveArray>(); public void Append(CurveArray c){Items.Add(c);} }
  public static class GroupTypeId { public static object Geometry=new object(); }
  public static class SpecTypeId { public static object Length=new object(); }
- public class Reference { public Curve Curve; public Reference(){} public Reference(Curve curve){Curve=curve;} }
+ public class Reference { public Curve Curve; public bool IsGeometric; public Reference(){} public Reference(Curve curve){Curve=curve;IsGeometric=true;} }
  public class ReferenceArray { public List<Reference> Items=new List<Reference>(); public void Append(Reference r){Items.Add(r);} }
+ public class PlanarFace { public Reference Reference=new Reference{IsGeometric=true}; }
+ public class PlaneGeometryElement:IEnumerable<PlanarFace> { private bool HasGeometry; public PlaneGeometryElement(bool hasGeometry){HasGeometry=hasGeometry;}
+  public IEnumerator<PlanarFace> GetEnumerator(){if(HasGeometry)yield return new PlanarFace();}
+  IEnumerator IEnumerable.GetEnumerator()=>GetEnumerator(); }
  public class Element { public ElementId Id; public string Name; public Document Document; public Element(Document d){Document=d;Id=new ElementId(d.NextId++);} }
  public class Level:Element { public double Elevation; public Level(Document d):base(d){} }
  public class Plane { public XYZ Origin,Normal; public static Plane CreateByOriginAndBasis(XYZ o,XYZ x,XYZ y)=>new Plane{Origin=o,Normal=new XYZ(0,0,1)}; }
  public class ReferencePlane:Element { private Plane Plane; public ReferencePlane(Document d,XYZ a,XYZ b,XYZ normal):base(d){
   var vertical=Math.Abs(b.Y-a.Y)>Math.Abs(b.X-a.X); Plane=new Plane{Origin=a,Normal=vertical?new XYZ(1,0,0):new XYZ(0,1,0)}; }
-  public Plane GetPlane()=>Plane; public Reference GetReference()=>new Reference(); }
+  public Plane GetPlane()=>Plane;
+  // Before regeneration the plane has no resolved geometry, so GetReference() is a
+  // non-geometric element reference; NewDimension must reject it. After regeneration the
+  // plane's PlanarFace exposes a genuine geometric reference (see PlaneGeometryElement).
+  public Reference GetReference()=>new Reference{IsGeometric=Document.Regenerated};
+  public PlaneGeometryElement get_Geometry(Options o)=>new PlaneGeometryElement(Document.Regenerated); }
  public class ViewPlan:Element { public bool IsTemplate; public ViewType ViewType=ViewType.FloorPlan; public Level GenLevel; public ViewPlan(Document d):base(d){} }
  public class SketchPlane { public static SketchPlane Create(Document doc,Plane plane)=>new SketchPlane(); }
 
@@ -306,7 +332,7 @@ namespace Autodesk.Revit.DB {
  public class SaveAsOptions { public bool OverwriteExistingFile; }
  public class Document { public List<Element> Items=new List<Element>(); public FamilyManager FamilyManager; public Autodesk.Revit.Creation.FamilyItemFactory FamilyCreate;
   public static string Scenario; public static bool FailGeometry=>Scenario=="geometry_failure"; public bool InitialTypeWasNull,NewParameterWrappers,SaveLockReleasedOnClose,LockedWhileSaved;
-  public int Transactions,Commits,Rollbacks,Saves,Closes,NextId=1,NewTypes,NewParameters,SetValues,Associations; public Extrusion Extrusion; public string Title="Cabinet";
+  public int Transactions,Commits,Rollbacks,Saves,Closes,NextId=1,NewTypes,NewParameters,SetValues,Associations,DimensionsAfterRegeneration; public Extrusion Extrusion; public string Title="Cabinet";
   private FileStream SaveLock;
   public Document(){FamilyManager=new FamilyManager(this);InitialTypeWasNull=FamilyManager.CurrentType==null;FamilyCreate=new Autodesk.Revit.Creation.FamilyItemFactory{Document=this};
    Items.Add(new ViewPlan(this)); var level=new Level(this){Elevation=0};Items.Add(level);Items.Add(new ViewPlan(this){GenLevel=level});
@@ -316,7 +342,8 @@ namespace Autodesk.Revit.DB {
      if(Scenario=="existing_instance")p.IsInstance=true;if(Scenario=="existing_text")p.StorageType=StorageType.String;
      if(Scenario=="existing_formula")p.Formula="1 ft";if(Scenario=="existing_associated")p.AssociatedParameters.Size=1;if(Scenario=="existing_reporting")p.IsReporting=true;}}
    var first=FamilyManager.GetParameters().FirstOrDefault();NewParameterWrappers=FamilyManager.GetParameters().Length==0||!ReferenceEquals(first,FamilyManager.GetParameters().First());}
-  public bool IsFamilyDocument=>true; public bool IsValidObject=true; public bool IsWorkshared=>false; public void Regenerate(){}
+  public bool IsFamilyDocument=>true; public bool IsValidObject=true; public bool IsWorkshared=false; public bool Regenerated;
+  public int Regenerations; public void Regenerate(){Regenerated=true;Regenerations++;}
   public Element GetElement(ElementId id)=>Items.Single(e=>e.Id.Value==id.Value);
   public void SaveAs(string path,SaveAsOptions o){Saves++;File.WriteAllText(path,"seam");SaveLock=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.None);LockedWhileSaved=true;
    if(Scenario=="save_failure"){SaveLock.Dispose();SaveLock=null;throw new Exception("save refused");}
@@ -348,6 +375,8 @@ public static class Probe { public static string Run(string scenario){
   ["temporary_files"]=new JArray(Directory.GetFiles(dir,".rvtmcp-*.rfa")),["initial_type_was_null"]=doc?.InitialTypeWasNull??false,["new_parameter_wrappers"]=doc?.NewParameterWrappers??false,
   ["save_lock_released_on_close"]=doc?.SaveLockReleasedOnClose??false,["locked_while_saved"]=doc?.LockedWhileSaved??false,["new_types"]=doc?.NewTypes??0,["new_parameters"]=doc?.NewParameters??0,
   ["set_values"]=doc?.SetValues??0,["labelled_dimensions_and_extrusion_associations"]=doc?.Associations??0,
+  ["dimensions_created_after_regeneration"]=(doc?.DimensionsAfterRegeneration??0)==4,
+  ["origin_equality_count"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>d.References==3)??0,
   ["private_family_discarded"]=RvtMcp.Plugin.Failures.FailureControl.Active.PrivateFamilyDiscarded,
   ["locked_profile_alignments"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>d.IsLocked)??0}.ToString(); }
  finally { doc?.ReleaseFailedCloseLock();try{Directory.Delete(dir,true);}catch{} } } }

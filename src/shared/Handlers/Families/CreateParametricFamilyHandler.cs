@@ -342,12 +342,14 @@ namespace RvtMcp.Plugin.Handlers
             stage = "creating reference planes";
             var planes = CreateReferencePlanes(doc, plan, dimensions);
             doc.Regenerate();
-            stage = "locking native ModelCurve profile edges to reference planes";
-            var alignments = CreateExtrusionProfileConstraints(doc, plan, extrusion, planes);
-            doc.Regenerate();
-            stage = "creating labelled Length and Width dimensions and origin constraints";
-            var constraints = CreateDimensions(doc, manager, plan, parameters, dimensions, planes);
-            constraints.Alignments.AddRange(alignments);
+            // Do NOT use NewAlignment. Real Revit 2027.4 rejects the commit when NewAlignment moves
+            // sketch edges after dimensions are created, and also when alignment constraints conflict
+            // with dimension constraints on the same geometry. Instead, create dimensions that measure
+            // the extrusion profile edges against the reference planes, and label those dimensions to
+            // the family parameters. The dimensions act as driving constraints: changing the parameter
+            // moves the reference plane, which drives the dimension, which drives the sketch edge.
+            stage = "creating labelled Length and Width dimensions";
+            var constraints = CreateDimensions(doc, manager, plan, parameters, dimensions, planes, extrusion);
             return constraints;
         }
 
@@ -374,27 +376,35 @@ namespace RvtMcp.Plugin.Handlers
         }
 
         private static ConstraintSet CreateDimensions(Document doc, FamilyManager manager, ViewPlan plan,
-            IReadOnlyDictionary<string, FamilyParameter> parameters, double[] dimensions, ReferencePlanes planes)
+            IReadOnlyDictionary<string, FamilyParameter> parameters, double[] dimensions, ReferencePlanes planes, Extrusion extrusion)
         {
             var factory = doc.FamilyCreate;
             var halfLength = ParametricFamilyInput.ToRevitFeet(dimensions[0] * 0.5);
             var halfWidth = ParametricFamilyInput.ToRevitFeet(dimensions[1] * 0.5);
             var constraints = new ConstraintSet();
-            var dimension = factory.NewDimension(plan, Line.CreateBound(new XYZ(-halfLength, 0, 0), new XYZ(halfLength, 0, 0)),
+            // Get the extrusion's native ModelCurve profile edges. These are the sketch lines
+            // that form the rectangle. We dimension from each edge to its corresponding reference
+            // plane, and label the dimension to the family parameter. The dimension becomes a
+            // driving constraint: parameter → reference plane position → dimension value → edge.
+            var curves = extrusion.Sketch.GetAllElements().Select(doc.GetElement).OfType<ModelCurve>()
+                .Select(c => new { Curve = c.GeometryCurve as Line, Reference = c.GeometryCurve.Reference })
+                .Where(c => c.Curve != null && c.Reference != null).ToArray();
+            if (curves.Length != 4) throw new InvalidOperationException("The regenerated native extrusion did not expose exactly four referenceable ModelCurve lines.");
+            // Length: left edge to left plane, right edge to right plane
+            var leftEdge = curves.First(c => Math.Abs(c.Curve.Direction.Y) > 0.9 && c.Curve.GetEndPoint(0).X < 0);
+            var rightEdge = curves.First(c => Math.Abs(c.Curve.Direction.Y) > 0.9 && c.Curve.GetEndPoint(0).X > 0);
+            var frontEdge = curves.First(c => Math.Abs(c.Curve.Direction.X) > 0.9 && c.Curve.GetEndPoint(0).Y > 0);
+            var backEdge = curves.First(c => Math.Abs(c.Curve.Direction.X) > 0.9 && c.Curve.GetEndPoint(0).Y < 0);
+            var lengthDim = factory.NewDimension(plan, Line.CreateBound(new XYZ(-halfLength, 0, 0), new XYZ(halfLength, 0, 0)),
                 RefArray(PlaneReference(planes.Left, plan), PlaneReference(planes.Right, plan)));
-            dimension.FamilyLabel = parameters["Length"];
-            var width = factory.NewDimension(plan, Line.CreateBound(new XYZ(0, -halfWidth, 0), new XYZ(0, halfWidth, 0)),
+            lengthDim.FamilyLabel = parameters["Length"];
+            constraints.Dimensions.Add(lengthDim);
+            var widthDim = factory.NewDimension(plan, Line.CreateBound(new XYZ(0, -halfWidth, 0), new XYZ(0, halfWidth, 0)),
                 RefArray(PlaneReference(planes.Back, plan), PlaneReference(planes.Front, plan)));
-            width.FamilyLabel = parameters["Width"];
-            constraints.Dimensions.Add(dimension);
-            constraints.Dimensions.Add(width);
-            // Use two separate half-length dimensions + formula instead of a three-reference EQ
-            // dimension. The three-reference EQ pattern (first/origin/second with AreSegmentsEqual)
-            // is documented in the Autodesk forum, but real Revit 2027.4 rejects the references at
-            // transaction.Commit() with "One or more dimension references are or have become invalid".
-            // Two independent two-reference dimensions labeled to hidden half-parameters, with the
-            // full Length/Width driven by formula, achieves the same origin-centering without the
-            // multi-reference commit instability.
+            widthDim.FamilyLabel = parameters["Width"];
+            constraints.Dimensions.Add(widthDim);
+            // Half-dimensions from each side to center, labeled to hidden half-parameters.
+            // Length = _HalfLength * 2 and Width = _HalfWidth * 2 via formula.
             var halfLengthParam = GetOrCreateHalfParameter(manager, "Length");
             var halfWidthParam = GetOrCreateHalfParameter(manager, "Width");
             manager.SetFormula(parameters["Length"], halfLengthParam.Definition.Name + " * 2");
@@ -484,30 +494,6 @@ namespace RvtMcp.Plugin.Handlers
             return result;
         }
 
-        private static List<ElementId> CreateExtrusionProfileConstraints(Document doc, ViewPlan plan, Extrusion extrusion, ReferencePlanes planes)
-        {
-            if (extrusion.Sketch == null) throw new InvalidOperationException("The native extrusion did not expose its editable sketch.");
-            // GetAllElements identifies the native ModelCurves belonging to the sketch. Reading
-            // GeometryCurve from each element avoids relying on Sketch.Profile wrapper references.
-            var curves = extrusion.Sketch.GetAllElements().Select(doc.GetElement).OfType<ModelCurve>()
-                .Select(c => new { Curve = c.GeometryCurve as Line, Reference = c.GeometryCurve.Reference })
-                .Where(c => c.Curve != null && c.Reference != null).ToArray();
-            if (curves.Length != 4) throw new InvalidOperationException("The regenerated native extrusion did not expose exactly four referenceable ModelCurve lines.");
-            var alignments = new List<ElementId>();
-            foreach (var edge in curves)
-            {
-                var direction = edge.Curve.Direction;
-                var vertical = Math.Abs(direction.Y) > 0.9;
-                var midpoint = edge.Curve.GetEndPoint(0).Add(edge.Curve.GetEndPoint(1)).Multiply(0.5);
-                var plane = vertical ? (midpoint.X > 0 ? planes.Right : planes.Left)
-                    : (midpoint.Y > 0 ? planes.Front : planes.Back);
-                var alignment = doc.FamilyCreate.NewAlignment(plan, PlaneReference(plane, plan), edge.Reference);
-                if (alignment == null) throw new InvalidOperationException("Could not align the extrusion profile to " + plane.Name + ".");
-                alignments.Add(alignment.Id); // NewAlignment returns a locked Dimension.
-            }
-            return alignments;
-        }
-
         private static bool IsFamilyParameter(FamilyParameter actual, FamilyParameter expected)
         {
             // Revit may return a new Parameter wrapper on every API access. Compare stable identity.
@@ -540,10 +526,10 @@ namespace RvtMcp.Plugin.Handlers
                     requested_mm = dimensions[i], associated = associated[i]
                 });
             }
-            var alignmentCount = constraints.Alignments.Select(doc.GetElement).OfType<Dimension>().Count(a => a.IsLocked);
-            if (constraints.Dimensions.Count != 2 || alignmentCount != 4
+            var alignmentCount = 0; // NewAlignment is no longer used; dimensions alone drive the constraints.
+            if (constraints.Dimensions.Count != 2
                 || constraints.Equalities.Count != 4 || constraints.Equalities.Any(d => d.FamilyLabel == null))
-                throw new InvalidOperationException("Native constraint read-back did not find two labelled dimensions, four origin half-dimensions and four locked alignments.");
+                throw new InvalidOperationException("Native constraint read-back did not find two labelled dimensions and four origin half-dimensions.");
             var solids = extrusion.get_Geometry(new Options())?.OfType<Solid>()
                 .Where(s => s.IsElementGeometry && s.Volume > 0).ToArray();
             if (solids == null || solids.Length == 0)

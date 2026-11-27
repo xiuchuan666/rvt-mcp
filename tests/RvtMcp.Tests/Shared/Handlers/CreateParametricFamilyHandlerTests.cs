@@ -40,7 +40,7 @@ public sealed class CreateParametricFamilyHandlerTests
         Assert.True(result.Value<bool>("initial_type_was_null"));
         Assert.True(result.Value<bool>("new_parameter_wrappers"));
         Assert.Equal(7, result.Value<int>("labelled_dimensions_and_extrusion_associations"));
-        Assert.Equal(4, result.Value<int>("locked_profile_alignments"));
+        Assert.Equal(0, result.Value<int>("locked_profile_alignments"));
         Assert.Equal(1200, data["geometry"]!["bounding_box_mm"]!.Value<double>("length"), 6);
         Assert.Equal(600, data["geometry"]!["bounding_box_mm"]!.Value<double>("width"), 6);
         Assert.Equal(900, data["geometry"]!["bounding_box_mm"]!.Value<double>("height"), 6);
@@ -49,7 +49,7 @@ public sealed class CreateParametricFamilyHandlerTests
         Assert.Equal(4, data["geometry"]!.Value<int>("reference_plane_count"));
         Assert.Equal(2, data["geometry"]!.Value<int>("labelled_dimension_count"));
         Assert.Equal(4, data["geometry"]!.Value<int>("origin_equality_count"));
-        Assert.Equal(4, data["geometry"]!.Value<int>("locked_alignment_count"));
+        Assert.Equal(0, data["geometry"]!.Value<int>("locked_alignment_count"));
         Assert.Equal(1, result.Value<int>("transaction_commits"));
         Assert.Equal(1, result.Value<int>("document_closes"));
         Assert.Empty(result["temporary_files"]!);

@@ -293,9 +293,16 @@ namespace RvtMcp.Plugin.Handlers
                 return result;
             }));
 
-            // Probe 6: planes + dimension + alignment lock + parameter flex test
+            // Probe 6: planes + dimension + alignment lock + parameter flex test (OLD ORDER — dimension before alignment)
             probes.Add(CommitProbeAlignmentFlex(doc, plan, "alignment-lock two-ref", useEq: false));
             probes.Add(CommitProbeAlignmentFlex(doc, plan, "alignment-lock EQ", useEq: true));
+
+            // Probe 7: CORRECT ORDER — align-first then dimension, planes at actual sketch positions
+            probes.Add(CommitProbeAlignFirst(doc, plan, "align-first two-ref", useEq: false));
+            probes.Add(CommitProbeAlignFirst(doc, plan, "align-first EQ", useEq: true));
+            // Width axis variants
+            probes.Add(CommitProbeAlignFirstWidth(doc, plan, "align-first width two-ref"));
+            probes.Add(CommitProbeAlignFirstWidth(doc, plan, "align-first width EQ"));
 
             return probes;
         }
@@ -357,7 +364,252 @@ namespace RvtMcp.Plugin.Handlers
             return result;
         }
 
-        // ── Probe 6: full pipeline with alignment lock + flex ──
+        // ── Probe 7: align-first strategy — planes at exact sketch positions, lock before dimension ──
+
+        /// <summary>
+        /// Length-axis probe: reads actual sketch geometry, creates planes at exact sketch line
+        /// positions, aligns and locks sketch curves to planes FIRST, then creates labelled
+        /// dimension, commits, and flexes the Length parameter.
+        /// </summary>
+        private static JObject CommitProbeAlignFirst(Document doc, ViewPlan plan, string label, bool useEq)
+            => AlignFirstCore(doc, plan, label, useEq, axis: "Length");
+
+        /// <summary>
+        /// Width-axis probe: same align-first strategy but drives the Width parameter
+        /// using front/back horizontal sketch lines.
+        /// </summary>
+        private static JObject CommitProbeAlignFirstWidth(Document doc, ViewPlan plan, string label)
+            => AlignFirstCore(doc, plan, label, useEq: false, axis: "Width");
+
+        private static JObject AlignFirstCore(Document doc, ViewPlan plan, string label, bool useEq, string axis)
+        {
+            var result = new JObject { ["probe"] = label, ["axis"] = axis };
+            var manager = doc.FamilyManager;
+            if (manager == null) { result["error"] = "No FamilyManager"; return result; }
+
+            bool isLength = string.Equals(axis, "Length", StringComparison.OrdinalIgnoreCase);
+
+            using (var transaction = new Transaction(doc, "RvtMcp align-first: " + label))
+            {
+                transaction.Start();
+                try
+                {
+                    // Step 1: Read actual sketch geometry to find exact positions
+                    var extr = new FilteredElementCollector(doc).OfClass(typeof(Extrusion)).Cast<Extrusion>().FirstOrDefault();
+                    if (extr?.Sketch == null) throw new InvalidOperationException("No extrusion sketch");
+
+                    var sketchCurves = extr.Sketch.GetAllElements()
+                        .Select(id => doc.GetElement(id) as ModelCurve)
+                        .Where(mc => mc?.GeometryCurve is Line)
+                        .Select(mc => new { Curve = mc, Line = (Line)mc.GeometryCurve })
+                        .ToList();
+
+                    // Separate vertical (Y-direction) and horizontal (X-direction) lines
+                    var verticalLines = sketchCurves
+                        .Where(mc => Math.Abs(mc.Line.Direction.Y) > 0.99)
+                        .OrderBy(mc => mc.Line.GetEndPoint(0).X)
+                        .ToList();
+                    var horizontalLines = sketchCurves
+                        .Where(mc => Math.Abs(mc.Line.Direction.X) > 0.99)
+                        .OrderBy(mc => mc.Line.GetEndPoint(0).Y)
+                        .ToList();
+
+                    if (verticalLines.Count < 2 || horizontalLines.Count < 2)
+                        throw new InvalidOperationException("Insufficient sketch lines");
+
+                    // Choose which lines to align based on axis
+                    dynamic firstLine, secondLine;
+                    double firstCoord, secondCoord;
+                    if (isLength)
+                    {
+                        firstLine = verticalLines.First();
+                        secondLine = verticalLines.Last();
+                        firstCoord = firstLine.Line.GetEndPoint(0).X;
+                        secondCoord = secondLine.Line.GetEndPoint(0).X;
+                    }
+                    else
+                    {
+                        firstLine = horizontalLines.First();
+                        secondLine = horizontalLines.Last();
+                        firstCoord = firstLine.Line.GetEndPoint(0).Y;
+                        secondCoord = secondLine.Line.GetEndPoint(0).Y;
+                    }
+                    result["first_coord"] = firstCoord;
+                    result["second_coord"] = secondCoord;
+
+                    // Step 2: Create reference planes at EXACT sketch line positions
+                    string firstName = isLength ? "RvtMcp Left" : "RvtMcp Front";
+                    string secondName = isLength ? "RvtMcp Right" : "RvtMcp Back";
+
+                    if (isLength)
+                    {
+                        EnsurePlane(doc, plan, firstName,
+                            new XYZ(firstCoord, -2, 0), new XYZ(firstCoord, 2, 0));
+                        EnsurePlane(doc, plan, secondName,
+                            new XYZ(secondCoord, -2, 0), new XYZ(secondCoord, 2, 0));
+                    }
+                    else
+                    {
+                        EnsurePlane(doc, plan, firstName,
+                            new XYZ(-3, firstCoord, 0), new XYZ(3, firstCoord, 0));
+                        EnsurePlane(doc, plan, secondName,
+                            new XYZ(-3, secondCoord, 0), new XYZ(3, secondCoord, 0));
+                    }
+                    doc.Regenerate();
+
+                    var firstPlane = FindPlane(doc, firstName);
+                    var secondPlane = FindPlane(doc, secondName);
+                    if (firstPlane == null || secondPlane == null)
+                        throw new InvalidOperationException("Failed to create reference planes");
+
+                    // Step 3: ALIGN AND LOCK sketch curves to planes (BEFORE dimension)
+                    var view = FindZeroLevelFloorPlan(doc);
+                    var alignResult = new JArray();
+
+                    // Align first line
+                    try
+                    {
+                        var alignment = doc.FamilyCreate.NewAlignment(view,
+                            firstLine.Curve.GeometryCurve.Reference, firstPlane.GetReference());
+                        TrySetLocked(alignment, alignResult, "first");
+                    }
+                    catch (Exception ex)
+                    {
+                        alignResult.Add(new JObject { ["side"] = "first", ["error"] = ex.Message });
+                    }
+
+                    doc.Regenerate();
+
+                    // Align second line
+                    try
+                    {
+                        var alignment = doc.FamilyCreate.NewAlignment(view,
+                            secondLine.Curve.GeometryCurve.Reference, secondPlane.GetReference());
+                        TrySetLocked(alignment, alignResult, "second");
+                    }
+                    catch (Exception ex)
+                    {
+                        alignResult.Add(new JObject { ["side"] = "second", ["error"] = ex.Message });
+                    }
+
+                    result["alignments"] = alignResult;
+                    doc.Regenerate();
+
+                    // Step 4: Create dimension on the aligned planes
+                    var dimStart = isLength ? new XYZ(firstCoord, 0, 0) : new XYZ(0, firstCoord, 0);
+                    var dimEnd = isLength ? new XYZ(secondCoord, 0, 0) : new XYZ(0, secondCoord, 0);
+
+                    Dimension dim;
+                    if (useEq && isLength)
+                    {
+                        var center = FindPlane(doc, "Center (Left/Right)");
+                        if (center == null) throw new InvalidOperationException("Center plane not found for EQ");
+                        var refs = new ReferenceArray();
+                        refs.Append(firstPlane.GetReference());
+                        refs.Append(center.GetReference());
+                        refs.Append(secondPlane.GetReference());
+                        dim = doc.FamilyCreate.NewDimension(plan, Line.CreateBound(dimStart, dimEnd), refs);
+                        dim.AreSegmentsEqual = true;
+                    }
+                    else
+                    {
+                        var refs = new ReferenceArray();
+                        refs.Append(firstPlane.GetReference());
+                        refs.Append(secondPlane.GetReference());
+                        dim = doc.FamilyCreate.NewDimension(plan, Line.CreateBound(dimStart, dimEnd), refs);
+                    }
+                    result["dimension_id"] = RevitCompat.GetId(dim.Id);
+                    result["dimension_value_ft"] = dim.Value;
+                    TryLabelDimension(doc, dim, axis, result);
+
+                    doc.Regenerate();
+
+                    var commitStatus = transaction.Commit();
+                    result["commit_status"] = commitStatus.ToString();
+
+                    // Read back post-commit
+                    var postExtr = new FilteredElementCollector(doc).OfClass(typeof(Extrusion)).Cast<Extrusion>().FirstOrDefault();
+                    if (postExtr != null)
+                    {
+                        var bbox = postExtr.get_BoundingBox(null);
+                        if (bbox != null)
+                        {
+                            result["post_commit_bbox_min"] = Point(bbox.Min);
+                            result["post_commit_bbox_max"] = Point(bbox.Max);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    result["commit_error"] = ex.Message;
+                    result["commit_error_type"] = ex.GetType().FullName;
+                    if (transaction.GetStatus() == TransactionStatus.Started)
+                        transaction.RollBack();
+                    return result;
+                }
+            }
+
+            // Step 5: Flex test — change the parameter and verify geometry follows
+            var param = manager.GetParameters()
+                .FirstOrDefault(p => string.Equals(p.Definition.Name, axis, StringComparison.OrdinalIgnoreCase));
+            if (param == null) { result["flex_error"] = axis + " parameter not found"; return result; }
+
+            var originalValue = manager.CurrentType.AsDouble(param);
+            if (originalValue == null) { result["flex_error"] = axis + " value is null"; return result; }
+            var origVal = originalValue.Value;
+            result["original_value_ft"] = origVal;
+
+            using (var flexTx = new Transaction(doc, "RvtMcp flex: " + label))
+            {
+                flexTx.Start();
+                try
+                {
+                    var newVal = origVal * 0.75;
+                    manager.Set(param, newVal);
+                    doc.Regenerate();
+
+                    var flexExtr = new FilteredElementCollector(doc).OfClass(typeof(Extrusion)).Cast<Extrusion>().FirstOrDefault();
+                    if (flexExtr != null)
+                    {
+                        var bbox = flexExtr.get_BoundingBox(null);
+                        if (bbox != null)
+                        {
+                            result["flex_bbox_min"] = Point(bbox.Min);
+                            result["flex_bbox_max"] = Point(bbox.Max);
+                        }
+                    }
+                    result["flex_new_value_ft"] = newVal;
+
+                    // Read sketch curves after flex
+                    if (flexExtr?.Sketch != null)
+                    {
+                        var flexCurves = new JArray();
+                        foreach (var id in flexExtr.Sketch.GetAllElements())
+                        {
+                            var mc = doc.GetElement(id) as ModelCurve;
+                            if (mc?.GeometryCurve is Line line)
+                                flexCurves.Add(new JObject { ["start"] = Point(line.GetEndPoint(0)), ["end"] = Point(line.GetEndPoint(1)) });
+                        }
+                        result["flex_sketch_curves"] = flexCurves;
+                    }
+
+                    // Restore
+                    manager.Set(param, origVal);
+                    doc.Regenerate();
+                    flexTx.Commit();
+                }
+                catch (Exception ex)
+                {
+                    result["flex_error"] = ex.Message;
+                    if (flexTx.GetStatus() == TransactionStatus.Started)
+                        flexTx.RollBack();
+                }
+            }
+
+            return result;
+        }
+
+        // ── Probe 6: full pipeline with alignment lock + flex (OLD ORDER — kept for comparison) ──
 
         private static JObject CommitProbeAlignmentFlex(Document doc, ViewPlan plan, string label, bool useEq)
         {

@@ -338,41 +338,54 @@ namespace RvtMcp.Plugin.Handlers
             if (end == null || end.IsReadOnly) throw new InvalidOperationException("The extrusion end parameter is unavailable or read-only.");
             manager.AssociateElementParameterToFamilyParameter(end, parameters["Height"]);
 
-            // Align only after native model-curve references exist; the geometry is already aligned.
             var plan = SelectFamilyPlan(doc);
-            stage = "creating labelled Length and Width dimensions and origin EQ constraints";
-            var constraints = CreateNamedPlanes(doc, manager, plan, parameters, dimensions);
+            stage = "creating reference planes";
+            var planes = CreateReferencePlanes(doc, plan, dimensions);
+            doc.Regenerate();
             stage = "locking native ModelCurve profile edges to reference planes";
-            constraints.Alignments.AddRange(CreateExtrusionProfileConstraints(doc, plan, extrusion));
+            var alignments = CreateExtrusionProfileConstraints(doc, plan, extrusion, planes);
+            doc.Regenerate();
+            stage = "creating labelled Length and Width dimensions and origin constraints";
+            var constraints = CreateDimensions(doc, manager, plan, parameters, dimensions, planes);
+            constraints.Alignments.AddRange(alignments);
             return constraints;
         }
 
-        private static ConstraintSet CreateNamedPlanes(Document doc, FamilyManager manager, ViewPlan plan,
-            IReadOnlyDictionary<string, FamilyParameter> parameters, double[] dimensions)
+        private sealed class ReferencePlanes
+        {
+            internal ReferencePlane Right, Left, Front, Back;
+        }
+
+        private static ReferencePlanes CreateReferencePlanes(Document doc, ViewPlan plan, double[] dimensions)
         {
             var factory = doc.FamilyCreate;
             var halfLength = ParametricFamilyInput.ToRevitFeet(dimensions[0] * 0.5);
             var halfWidth = ParametricFamilyInput.ToRevitFeet(dimensions[1] * 0.5);
-            var right = factory.NewReferencePlane(new XYZ(halfLength, -2, 0), new XYZ(halfLength, 2, 0), XYZ.BasisZ, plan);
-            right.Name = "RvtMcp Right";
-            var left = factory.NewReferencePlane(new XYZ(-halfLength, -2, 0), new XYZ(-halfLength, 2, 0), XYZ.BasisZ, plan);
-            left.Name = "RvtMcp Left";
-            var front = factory.NewReferencePlane(new XYZ(-2, halfWidth, 0), new XYZ(2, halfWidth, 0), XYZ.BasisZ, plan);
-            front.Name = "RvtMcp Front";
-            var back = factory.NewReferencePlane(new XYZ(-2, -halfWidth, 0), new XYZ(2, -halfWidth, 0), XYZ.BasisZ, plan);
-            back.Name = "RvtMcp Back";
-            // A newly created ReferencePlane does not yet expose a *geometric* reference that
-            // ItemFactoryBase.NewDimension accepts ("The references are not geometric references").
-            // Regenerate first so each plane's geometry exists, then re-read the elements and obtain
-            // the references from the resolved geometry rather than from the just-created wrappers.
-            doc.Regenerate();
+            var planes = new ReferencePlanes();
+            planes.Right = factory.NewReferencePlane(new XYZ(halfLength, -2, 0), new XYZ(halfLength, 2, 0), XYZ.BasisZ, plan);
+            planes.Right.Name = "RvtMcp Right";
+            planes.Left = factory.NewReferencePlane(new XYZ(-halfLength, -2, 0), new XYZ(-halfLength, 2, 0), XYZ.BasisZ, plan);
+            planes.Left.Name = "RvtMcp Left";
+            planes.Front = factory.NewReferencePlane(new XYZ(-2, halfWidth, 0), new XYZ(2, halfWidth, 0), XYZ.BasisZ, plan);
+            planes.Front.Name = "RvtMcp Front";
+            planes.Back = factory.NewReferencePlane(new XYZ(-2, -halfWidth, 0), new XYZ(2, -halfWidth, 0), XYZ.BasisZ, plan);
+            planes.Back.Name = "RvtMcp Back";
+            return planes;
+        }
+
+        private static ConstraintSet CreateDimensions(Document doc, FamilyManager manager, ViewPlan plan,
+            IReadOnlyDictionary<string, FamilyParameter> parameters, double[] dimensions, ReferencePlanes planes)
+        {
+            var factory = doc.FamilyCreate;
+            var halfLength = ParametricFamilyInput.ToRevitFeet(dimensions[0] * 0.5);
+            var halfWidth = ParametricFamilyInput.ToRevitFeet(dimensions[1] * 0.5);
+            var constraints = new ConstraintSet();
             var dimension = factory.NewDimension(plan, Line.CreateBound(new XYZ(-halfLength, 0, 0), new XYZ(halfLength, 0, 0)),
-                RefArray(PlaneReference(left, plan), PlaneReference(right, plan)));
+                RefArray(PlaneReference(planes.Left, plan), PlaneReference(planes.Right, plan)));
             dimension.FamilyLabel = parameters["Length"];
             var width = factory.NewDimension(plan, Line.CreateBound(new XYZ(0, -halfWidth, 0), new XYZ(0, halfWidth, 0)),
-                RefArray(PlaneReference(back, plan), PlaneReference(front, plan)));
+                RefArray(PlaneReference(planes.Back, plan), PlaneReference(planes.Front, plan)));
             width.FamilyLabel = parameters["Width"];
-            var constraints = new ConstraintSet();
             constraints.Dimensions.Add(dimension);
             constraints.Dimensions.Add(width);
             // Use two separate half-length dimensions + formula instead of a three-reference EQ
@@ -386,13 +399,13 @@ namespace RvtMcp.Plugin.Handlers
             var halfWidthParam = GetOrCreateHalfParameter(manager, "Width");
             manager.SetFormula(parameters["Length"], halfLengthParam.Definition.Name + " * 2");
             manager.SetFormula(parameters["Width"], halfWidthParam.Definition.Name + " * 2");
-            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, left, halfLengthParam,
+            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, planes.Left, halfLengthParam,
                 Line.CreateBound(new XYZ(-halfLength, 0, 0), new XYZ(0, 0, 0)), true));
-            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, right, halfLengthParam,
+            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, planes.Right, halfLengthParam,
                 Line.CreateBound(new XYZ(0, 0, 0), new XYZ(halfLength, 0, 0)), true));
-            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, back, halfWidthParam,
+            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, planes.Back, halfWidthParam,
                 Line.CreateBound(new XYZ(0, -halfWidth, 0), new XYZ(0, 0, 0)), false));
-            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, front, halfWidthParam,
+            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, planes.Front, halfWidthParam,
                 Line.CreateBound(new XYZ(0, 0, 0), new XYZ(0, halfWidth, 0)), false));
             return constraints;
         }
@@ -471,7 +484,7 @@ namespace RvtMcp.Plugin.Handlers
             return result;
         }
 
-        private static List<ElementId> CreateExtrusionProfileConstraints(Document doc, ViewPlan plan, Extrusion extrusion)
+        private static List<ElementId> CreateExtrusionProfileConstraints(Document doc, ViewPlan plan, Extrusion extrusion, ReferencePlanes planes)
         {
             if (extrusion.Sketch == null) throw new InvalidOperationException("The native extrusion did not expose its editable sketch.");
             // GetAllElements identifies the native ModelCurves belonging to the sketch. Reading
@@ -480,21 +493,18 @@ namespace RvtMcp.Plugin.Handlers
                 .Select(c => new { Curve = c.GeometryCurve as Line, Reference = c.GeometryCurve.Reference })
                 .Where(c => c.Curve != null && c.Reference != null).ToArray();
             if (curves.Length != 4) throw new InvalidOperationException("The regenerated native extrusion did not expose exactly four referenceable ModelCurve lines.");
-            var planes = new FilteredElementCollector(doc).OfClass(typeof(ReferencePlane)).Cast<ReferencePlane>().ToArray();
             var alignments = new List<ElementId>();
             foreach (var edge in curves)
             {
                 var direction = edge.Curve.Direction;
                 var vertical = Math.Abs(direction.Y) > 0.9;
                 var midpoint = edge.Curve.GetEndPoint(0).Add(edge.Curve.GetEndPoint(1)).Multiply(0.5);
-                var name = vertical ? (midpoint.X > 0 ? "RvtMcp Right" : "RvtMcp Left")
-                    : (midpoint.Y > 0 ? "RvtMcp Front" : "RvtMcp Back");
-                var plane = planes.First(p => p.Name == name);
+                var plane = vertical ? (midpoint.X > 0 ? planes.Right : planes.Left)
+                    : (midpoint.Y > 0 ? planes.Front : planes.Back);
                 var alignment = doc.FamilyCreate.NewAlignment(plan, PlaneReference(plane, plan), edge.Reference);
-                if (alignment == null) throw new InvalidOperationException("Could not align the extrusion profile to " + name + ".");
+                if (alignment == null) throw new InvalidOperationException("Could not align the extrusion profile to " + plane.Name + ".");
                 alignments.Add(alignment.Id); // NewAlignment returns a locked Dimension.
             }
-            doc.Regenerate();
             return alignments;
         }
 

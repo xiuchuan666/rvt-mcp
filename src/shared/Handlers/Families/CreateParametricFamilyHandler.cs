@@ -15,9 +15,9 @@ namespace RvtMcp.Plugin.Handlers
 {
     /// <summary>
     /// Revit 2027 family-authoring slice: one native extrusion whose Length, Width and Height
-    /// are type parameters. Height is associated directly to EXTRUSION_END_PARAM. Length/Width
-    /// are stored as family parameters; changing them requires deleting and recreating the
-    /// extrusion with new sketch coordinates (no labelled dimensions or reference planes).
+    /// are type parameters driven by labelled dimensions and alignment locks.
+    /// Length/Width: reference planes at exact sketch positions → alignment lock → labelled dimension.
+    /// Height: associated directly to EXTRUSION_END_PARAM.
     /// </summary>
     public sealed class CreateParametricFamilyHandler : IRevitCommand
     {
@@ -129,6 +129,27 @@ namespace RvtMcp.Plugin.Handlers
                             var start = extrusion.get_Parameter(BuiltInParameter.EXTRUSION_START_PARAM);
                             if (start == null || Math.Abs(start.AsDouble()) > 1e-8)
                                 throw new InvalidOperationException("The extrusion did not start at the work-plane origin (zero).");
+
+                            stage = "creating reference planes at sketch positions";
+                            var halfLength = ParametricFamilyInput.ToRevitFeet(dimensions[0] * 0.5);
+                            var halfWidth = ParametricFamilyInput.ToRevitFeet(dimensions[1] * 0.5);
+                            var leftPlane = CreateNamedPlane(familyDoc, plan, "RvtMcp Left", new XYZ(-halfLength, -halfWidth * 2, 0), new XYZ(-halfLength, halfWidth * 2, 0));
+                            var rightPlane = CreateNamedPlane(familyDoc, plan, "RvtMcp Right", new XYZ(halfLength, -halfWidth * 2, 0), new XYZ(halfLength, halfWidth * 2, 0));
+                            var frontPlane = CreateNamedPlane(familyDoc, plan, "RvtMcp Front", new XYZ(-halfLength * 2, -halfWidth, 0), new XYZ(halfLength * 2, -halfWidth, 0));
+                            var backPlane = CreateNamedPlane(familyDoc, plan, "RvtMcp Back", new XYZ(-halfLength * 2, halfWidth, 0), new XYZ(halfLength * 2, halfWidth, 0));
+                            familyDoc.Regenerate();
+
+                            stage = "aligning and locking sketch curves to reference planes";
+                            AlignSketchCurvesToPlanes(familyDoc, plan, extrusion, leftPlane, rightPlane, frontPlane, backPlane);
+                            familyDoc.Regenerate();
+
+                            stage = "creating labelled Length dimension";
+                            var lengthDim = CreateLabelledDimension(familyDoc, plan, leftPlane, rightPlane,
+                                new XYZ(-halfLength, 0, 0), new XYZ(halfLength, 0, 0), parameters["Length"]);
+                            stage = "creating labelled Width dimension";
+                            var widthDim = CreateLabelledDimension(familyDoc, plan, frontPlane, backPlane,
+                                new XYZ(0, -halfWidth, 0), new XYZ(0, halfWidth, 0), parameters["Width"]);
+                            familyDoc.Regenerate();
 
                             stage = "associating extrusion Height";
                             var end = extrusion.get_Parameter(BuiltInParameter.EXTRUSION_END_PARAM);
@@ -325,6 +346,81 @@ namespace RvtMcp.Plugin.Handlers
             return doc.FamilyCreate.NewExtrusion(true, loops, plane, ParametricFamilyInput.ToRevitFeet(dimensions[2]));
         }
 
+        // ── Native parameter-driven constraints ──
+
+        private static ReferencePlane CreateNamedPlane(Document doc, ViewPlan plan, string name, XYZ bubble, XYZ free)
+        {
+            var plane = doc.FamilyCreate.NewReferencePlane(bubble, free, XYZ.BasisZ, plan);
+            if (plane == null) throw new InvalidOperationException("Failed to create reference plane: " + name);
+            plane.Name = name;
+            return plane;
+        }
+
+        private static void AlignSketchCurvesToPlanes(Document doc, ViewPlan plan, Extrusion extrusion,
+            ReferencePlane left, ReferencePlane right, ReferencePlane front, ReferencePlane back)
+        {
+            var sketchCurves = extrusion.Sketch.GetAllElements()
+                .Select(id => doc.GetElement(id) as ModelCurve)
+                .Where(mc => mc?.GeometryCurve is Line)
+                .Select(mc => new { Curve = mc, Line = (Line)mc.GeometryCurve })
+                .ToList();
+
+            var verticalLines = sketchCurves
+                .Where(mc => Math.Abs(mc.Line.Direction.Y) > 0.99)
+                .OrderBy(mc => mc.Line.GetEndPoint(0).X)
+                .ToList();
+            var horizontalLines = sketchCurves
+                .Where(mc => Math.Abs(mc.Line.Direction.X) > 0.99)
+                .OrderBy(mc => mc.Line.GetEndPoint(0).Y)
+                .ToList();
+
+            if (verticalLines.Count < 2) throw new InvalidOperationException("Extrusion sketch has fewer than 2 vertical lines.");
+            if (horizontalLines.Count < 2) throw new InvalidOperationException("Extrusion sketch has fewer than 2 horizontal lines.");
+
+            // Align vertical lines to left/right planes
+            AlignAndLock(doc, plan, verticalLines.First().Curve, left, "Left");
+            doc.Regenerate();
+            AlignAndLock(doc, plan, verticalLines.Last().Curve, right, "Right");
+            doc.Regenerate();
+
+            // Align horizontal lines to front/back planes
+            AlignAndLock(doc, plan, horizontalLines.First().Curve, front, "Front");
+            doc.Regenerate();
+            AlignAndLock(doc, plan, horizontalLines.Last().Curve, back, "Back");
+        }
+
+        private static void AlignAndLock(Document doc, ViewPlan plan, ModelCurve sketchCurve, ReferencePlane plane, string label)
+        {
+            var sketchRef = sketchCurve.GeometryCurve?.Reference;
+            var planeRef = plane.GetReference();
+            if (sketchRef == null) throw new InvalidOperationException("Sketch curve reference is null for " + label + " alignment.");
+            if (planeRef == null) throw new InvalidOperationException("Reference plane reference is null for " + label + " alignment.");
+
+            var alignment = doc.FamilyCreate.NewAlignment(plan, sketchRef, planeRef);
+            if (alignment == null) throw new InvalidOperationException("NewAlignment returned null for " + label + ".");
+
+            // Set Locked via the Alignment type (not Dimension base)
+            var lockedProp = alignment.GetType().GetProperty("Locked");
+            if (lockedProp != null && lockedProp.CanWrite)
+                lockedProp.SetValue(alignment, true);
+            else
+                throw new InvalidOperationException("Alignment.Locked property not available for " + label + ". Type: " + alignment.GetType().FullName);
+        }
+
+        private static Dimension CreateLabelledDimension(Document doc, ViewPlan plan,
+            ReferencePlane first, ReferencePlane second, XYZ dimStart, XYZ dimEnd, FamilyParameter labelParam)
+        {
+            var refs = new ReferenceArray();
+            refs.Append(first.GetReference());
+            refs.Append(second.GetReference());
+            var dim = doc.FamilyCreate.NewDimension(plan, Line.CreateBound(dimStart, dimEnd), refs);
+            if (dim == null) throw new InvalidOperationException("NewDimension returned null.");
+            dim.FamilyLabel = labelParam;
+            if (dim.FamilyLabel == null || dim.FamilyLabel.Definition.Name != labelParam.Definition.Name)
+                throw new InvalidOperationException("Dimension FamilyLabel did not accept parameter " + labelParam.Definition.Name + ".");
+            return dim;
+        }
+
         private static bool IsFamilyParameter(FamilyParameter actual, FamilyParameter expected)
         {
             // Revit may return a new Parameter wrapper on every API access. Compare stable identity.
@@ -339,10 +435,16 @@ namespace RvtMcp.Plugin.Handlers
             var names = new[] { "Length", "Width", "Height" };
             var read = new List<object>();
             var end = extrusion.get_Parameter(BuiltInParameter.EXTRUSION_END_PARAM);
+
+            // Check dimension-based associations for Length and Width
+            var dimensions_list = new FilteredElementCollector(doc).OfClass(typeof(Dimension)).Cast<Dimension>().ToList();
+            var lengthDim = dimensions_list.FirstOrDefault(d => d.FamilyLabel != null && d.FamilyLabel.Definition.Name == "Length");
+            var widthDim = dimensions_list.FirstOrDefault(d => d.FamilyLabel != null && d.FamilyLabel.Definition.Name == "Width");
+
             var associated = new[]
             {
-                false, // Length: no dimension association; driven by sketch rebuild
-                false, // Width: no dimension association; driven by sketch rebuild
+                lengthDim != null && IsFamilyParameter(lengthDim.FamilyLabel, parameters["Length"]),
+                widthDim != null && IsFamilyParameter(widthDim.FamilyLabel, parameters["Width"]),
                 end != null && IsFamilyParameter(manager.GetAssociatedFamilyParameter(end), parameters["Height"])
             };
             for (var i = 0; i < names.Length; i++)
@@ -350,9 +452,7 @@ namespace RvtMcp.Plugin.Handlers
                 var parameter = parameters[names[i]];
                 var value = manager.CurrentType.AsDouble(parameter);
                 if (value == null) throw new InvalidOperationException("Family parameter " + names[i] + " has no numeric value.");
-                // Length and Width are not associated to native geometry via dimensions; they are
-                // driven by sketch rebuild. Only Height must be associated to EXTRUSION_END_PARAM.
-                if (i == 2 && !associated[i]) throw new InvalidOperationException("Family parameter " + names[i] + " is not associated with native geometry.");
+                if (!associated[i]) throw new InvalidOperationException("Family parameter " + names[i] + " is not associated with native geometry.");
                 read.Add(new
                 {
                     name = names[i], scope = Scope, spec = "Length", value_mm = ParametricFamilyInput.MillimetersFromFeet(value.Value),
@@ -371,6 +471,15 @@ namespace RvtMcp.Plugin.Handlers
             var matches = actual.Select((value, i) => Math.Abs(value - dimensions[i]) <= 0.01).ToArray();
             if (!matches.All(match => match))
                 throw new InvalidOperationException("Regenerated extrusion geometry does not match the requested millimeter dimensions.");
+
+            // Count alignment locks
+            var alignmentCount = new FilteredElementCollector(doc).OfClass(typeof(Dimension)).Cast<Dimension>()
+                .Count(d =>
+                {
+                    var lockedProp = d.GetType().GetProperty("Locked");
+                    return lockedProp != null && lockedProp.GetValue(d) is true;
+                });
+
             return new
             {
                 family_name = familyName, document_title = doc.Title, family_type = typeName,
@@ -378,8 +487,8 @@ namespace RvtMcp.Plugin.Handlers
                 geometry = new
                 {
                     extrusion_id = RevitCompat.GetId(extrusion.Id).ToString(CultureInfo.InvariantCulture), solid_count = solidCount,
-                    reference_plane_count = 0, labelled_dimension_count = 0,
-                    origin_equality_count = 0, locked_alignment_count = 0,
+                    reference_plane_count = 4, labelled_dimension_count = 2,
+                    origin_equality_count = 0, locked_alignment_count = alignmentCount,
                     bounding_box_mm = new { length = actual[0], width = actual[1], height = actual[2] },
                     dimensions_match = matches.All(m => m)
                 }

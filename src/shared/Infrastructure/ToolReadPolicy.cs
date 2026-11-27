@@ -140,7 +140,7 @@ namespace RvtMcp.Plugin
             if (IsIndependentFamilyAuthoring(command))
             {
                 if (!string.Equals(expectedDocumentId ?? "", activeDocumentId ?? "", StringComparison.Ordinal))
-                    return "DOCUMENT_CHANGED: the active document differs from the document or Home state confirmed for family authoring. The independent family was not started. Review and confirm the intended target with revit_switch_target(verify=true).";
+                    return "DOCUMENT_CHANGED: the active document differs from the document or Home state confirmed for family authoring. The independent family was not started. Confirm the intended target again (for an open project: revit_switch_target(verify=true); for Revit Home: revit_switch_target(version=\"pid:<n>\", verify=false)).";
                 // The gateway sends the add-in's own shared DialogDocumentContext stamp;
                 // McpEventHandler validates it immediately before native execution.
                 return null;

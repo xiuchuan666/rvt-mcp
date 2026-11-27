@@ -164,6 +164,7 @@ namespace RvtMcp.Plugin
                     ReportContext = request["report_context"]?.ToObject<ReportCallContext>(),
                     FromMcp = true,
                     ExpectedDocumentId = request.Value<string>("expected_document_id"),
+                    ExpectedContextGeneration = request.Value<long?>("expected_context_generation"),
                     DocumentProtocol = request.Value<int?>("document_protocol") >= 1,
                     DialogAnswerContext = request.Value<long?>("dialog_answer_context"),
                     DialogAnswers = request["dialog_answers"] as Newtonsoft.Json.Linq.JArray,

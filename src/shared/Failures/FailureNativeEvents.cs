@@ -224,7 +224,16 @@ namespace RvtMcp.Plugin.Failures
                 {
                     _lastOpened = null;
                     if (args.Operation == UndoOperation.TransactionCommitted || args.Operation == UndoOperation.TransactionRedone)
-                    { Active.AnyCommitted = true; Active.BatchRolledBack = false; Active.CommittedLog.Committed(args.GetTransactionNames()); }
+                    {
+                        if (McpDocument.CurrentOwnedDocument(document) != null)
+                        {
+                            // Commits on a tool-owned temporary family document are private until the
+                            // final output file exists. They must not be reported as external mutation.
+                            if (Active != null) Active.PrivateTransientCommits++;
+                        }
+                        else
+                        { Active.AnyCommitted = true; Active.BatchRolledBack = false; Active.CommittedLog.Committed(args.GetTransactionNames()); }
+                    }
                     else if (args.Operation == UndoOperation.TransactionUndone
                         || (args.Operation == UndoOperation.TransactionGroupRolledBack && Active.GroupStates.Count == 0))
                     { Active.NativeOutcome = "unknown"; Active.Operation.Complete = false; }
@@ -425,6 +434,9 @@ namespace RvtMcp.Plugin.Failures
             });
         }
 
+        // Returns true when this tool-owned family SavingAs event has been handled (either released
+        // for the one authorized save, or cancelled here). Returning true after args.Cancel() means
+        // the write was REFUSED, not permitted. Returns false only to fall through to ordinary policy.
         private static bool AllowFamilySaveAs(DocumentSavingAsEventArgs args, DocumentState state)
         {
             var authorization = _familyAuthoring;
@@ -437,15 +449,25 @@ namespace RvtMcp.Plugin.Failures
                     Handlers.ParametricFamilyInput.TemporaryOutputDirectory(authorization.Path),
                     Path.GetDirectoryName(args.PathName)))
                 return false;
+            // This is a pre-event: Revit has not written anything yet. Never set NativeCommitted here
+            // (only OnSaved with status Succeeded does that). And never release the write when the
+            // scope is already stopped/storage-failed or another add-in already cancelled the event.
+            if (Scoped() && (Active.Stopped || Active.StorageFailed || args.IsCancelled()))
+            {
+                args.Cancel();
+                return true;
+            }
             authorization.Used = true;
-            // SaveAs/SaveAs are the durable native commit for the tool-owned temporary .rfa;
-            // the later same-volume non-overwriting rename creates the requested final output.
             if (Scoped())
             {
-                Active.NativeCommitted = true;
-                // This is only the temporary .rfa commit. Final output completion is
-                // File.Move after a supported close, not another model mutation.
+                // Record the attempted native save operation for audit. If persisting that record
+                // fails, the scope is now stopped: cancel this event rather than writing to disk.
                 Active.SaveOperation();
+                if (Active.Stopped || Active.StorageFailed)
+                {
+                    args.Cancel();
+                    return true;
+                }
             }
             return true;
         }

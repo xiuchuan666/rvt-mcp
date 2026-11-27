@@ -23,7 +23,29 @@ public class FailureDocumentLifetimeTests
     public void Real_family_save_authorization_is_one_shot_and_only_for_the_owned_document_and_path()
     {
         var result = (object[])CompileFamilyProbe().Invoke(null, Array.Empty<object>())!;
+        // first=allowed, second(one-shot)=denied, wrong path=denied, central=denied,
+        // different doc=denied, directory path=denied — and the pre-event never sets NativeCommitted.
         Assert.Equal(new object[] { true, false, false, false, false, false }, result);
+    }
+
+    [Theory]
+    // (stopped, storageFailed, alreadyCancelled, saveOperationFails) → expectedEventCancelled.
+    // AllowFamilySaveAs "handled" is true whenever it owns the event; the WRITE is permitted only
+    // when the event is left uncancelled. So the write happens iff expectedEventCancelled == false.
+    [InlineData(false, false, false, false, false)]  // clean: released, not cancelled, no pre-commit
+    [InlineData(true, false, false, false, true)]    // stopped scope → event cancelled, no save
+    [InlineData(false, true, false, false, true)]    // storage failed → event cancelled
+    [InlineData(false, false, true, false, true)]    // already cancelled by another add-in → stays cancelled
+    [InlineData(false, false, false, true, true)]    // SaveOperation itself fails → cancel, no disk write
+    public void Real_family_save_pre_event_never_pre_commits_and_honors_stop_and_cancel(
+        bool stopped, bool storageFailed, bool alreadyCancelled, bool saveOperationFails, bool expectedEventCancelled)
+    {
+        var values = (object[])CompileFamilyProbe().DeclaringType!.GetMethod("StoppedProbe")!
+            .Invoke(null, new object[] { stopped, storageFailed, alreadyCancelled, saveOperationFails })!;
+        Assert.True((bool)values[0]);                              // the family event was handled (never falls through)
+        Assert.False((bool)values[1]);                             // pre-event NEVER sets NativeCommitted
+        Assert.Equal(expectedEventCancelled, values[2]);           // write refused unless context clean
+        if (!expectedEventCancelled) Assert.Equal(1, values[3]);   // clean path recorded exactly one save operation
     }
 
     private static MethodInfo CompileFamilyProbe([CallerFilePath] string file = "")
@@ -34,22 +56,34 @@ public class FailureDocumentLifetimeTests
             .Where(method => FamilyMethods.Contains(method.Identifier.ValueText))
             .Select(method => method.ToFullString()
                 .Replace("Handlers.OpenModelLocalPolicy", "OpenModelLocalPolicy")
-                .Replace("Handlers.ParametricFamilyInput", "ParametricFamilyInput")
-                .Replace("Active.SaveOperation();", ""));
+                .Replace("Handlers.ParametricFamilyInput", "ParametricFamilyInput"));
         var types = syntax.DescendantNodes().OfType<ClassDeclarationSyntax>()
             .Where(type => type.Identifier.ValueText == "FamilyAuthoringAuthorization" || type.Identifier.ValueText == "ActionOnDispose")
             .Select(type => type.ToFullString());
-        var text = "using System; using System.IO; using System.Collections.Generic; using RvtMcp.Plugin.Handlers; public class FamilyProbe {public static dynamic Active = null; public static class ParametricFamilyInput { public static string TemporaryOutputDirectory(string path)=>Path.GetDirectoryName(path); } " + string.Join("\n", types) + string.Join("\n", methods) + @"
+        // Active is a REAL scope double (not stubbed to null): Scoped() is true, SaveOperation()
+        // records the call and can inject a storage failure, NativeCommitted is observed. This
+        // exercises exactly the stop/cancel/pre-commit logic that the previous stub hid.
+        var text = "using System; using System.IO; using System.Collections.Generic; using RvtMcp.Plugin.Handlers; public class FamilyProbe {public static class ParametricFamilyInput { public static string TemporaryOutputDirectory(string path)=>Path.GetDirectoryName(path); } " + string.Join("\n", types) + string.Join("\n", methods) + @"
 static FamilyAuthoringAuthorization _familyAuthoring;
-static bool Scoped()=>false;
+static Scope Active = new Scope();
+static bool Scoped()=>true;
+public class Scope {
+ public bool Stopped, StorageFailed, NativeCommitted, FailSaveOperation;
+ public int SaveCalls;
+ public void SaveOperation() { SaveCalls++; if(FailSaveOperation){StorageFailed=true;Stopped=true;} }
+}
 static class McpDocument {public static Document CurrentOwnedDocument(Document doc)=>doc;}
 public class Document {public bool IsValidObject=true,IsFamilyDocument=true,IsWorkshared;}
 public class DocumentState {}
-public class DocumentSavingAsEventArgs {public Document Document;public string PathName;public bool IsSavingAsCentralFile;}
+public class DocumentSavingAsEventArgs {
+ public Document Document;public string PathName;public bool IsSavingAsCentralFile;
+ public bool Cancelled; public void Cancel(){Cancelled=true;} public bool IsCancelled()=>Cancelled;
+}
 public static object[] Run() {
  var dir=Path.Combine(Path.GetTempPath(),""family-save-probe-""+Guid.NewGuid().ToString(""N""));Directory.CreateDirectory(dir);
  var doc=new Document();var path=Path.Combine(dir,"".rvtmcp-test.rfa"");
  try {
+  Active=new Scope();
   using(AuthorizeFamilySave(doc,path)) {
    var first=AllowFamilySaveAs(new DocumentSavingAsEventArgs{Document=doc,PathName=path},null);
    var once=AllowFamilySaveAs(new DocumentSavingAsEventArgs{Document=doc,PathName=path},null);
@@ -59,6 +93,17 @@ public static object[] Run() {
     AllowFamilySaveAs(new DocumentSavingAsEventArgs{Document=new Document(),PathName=path},null),
     AllowFamilySaveAs(new DocumentSavingAsEventArgs{Document=doc,PathName=dir},null)};
   }
+ } finally {Directory.Delete(dir,true);}
+}
+public static object[] StoppedProbe(bool stopped,bool storageFailed,bool alreadyCancelled,bool saveFails) {
+ var dir=Path.Combine(Path.GetTempPath(),""family-stop-probe-""+Guid.NewGuid().ToString(""N""));Directory.CreateDirectory(dir);
+ var doc=new Document();var path=Path.Combine(dir,"".rvtmcp-test.rfa"");
+ try {
+  Active=new Scope{Stopped=stopped,StorageFailed=storageFailed,FailSaveOperation=saveFails};
+  var args=new DocumentSavingAsEventArgs{Document=doc,PathName=path,Cancelled=alreadyCancelled};
+  bool allowed;
+  using(AuthorizeFamilySave(doc,path)) { allowed=AllowFamilySaveAs(args,null); }
+  return new object[]{allowed,Active.NativeCommitted,args.Cancelled,Active.SaveCalls};
  } finally {Directory.Delete(dir,true);}
 }
 }";

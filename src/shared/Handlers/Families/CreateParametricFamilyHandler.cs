@@ -91,9 +91,14 @@ namespace RvtMcp.Plugin.Handlers
                     // TrackOpened must run before any failure/save/close event for this new document.
                     // Begin snapshots all pre-existing documents, so a user's family is never owned.
                     familyDoc = McpDocument.TrackOpened(app.Application.NewFamilyDocument(templatePath));
-                    stage = "creating the native extrusion and parameter constraints";
                     if (familyDoc == null || !familyDoc.IsFamilyDocument)
                         throw new InvalidOperationException("Revit did not open the supplied template as a family document.");
+                    // Fail fast BEFORE any transaction or disk write if Revit activated the new family
+                    // (e.g. Home state or a third-party callback). Document.Close cannot close the active
+                    // document, so an active family here means no save, no temp file, nothing to clean up.
+                    if (IsActiveDocument(app, familyDoc))
+                        throw new InvalidOperationException("Revit opened the new family as the active document, which cannot be closed through Document.Close. The family remains open for user review; no file was written.");
+                    stage = "creating the native extrusion and parameter constraints";
 
                     var dimensions = new[] { lengthMm, widthMm, heightMm };
                     object familyData;
@@ -139,6 +144,9 @@ namespace RvtMcp.Plugin.Handlers
                     if (File.Exists(outputPath) || Directory.Exists(outputPath)) // A second guard immediately before the native save.
                         throw new IOException("output_path already exists. This tool never overwrites an existing file or directory.");
                     stage = "saving the temporary family";
+                    // Refuse to write if the scope was already stopped (e.g. ledger storage failure on
+                    // the transaction commit). The pre-event also re-checks this; this is the handler gate.
+                    FailureControl.ThrowIfStopped();
                     // Save only a uniquely named temporary .rfa. The final same-volume rename is
                     // atomic and non-overwriting on Windows. The typed one-shot authorization is
                     // checked by FailureControl's real SavingAs event, not a caller-supplied grant.
@@ -146,13 +154,14 @@ namespace RvtMcp.Plugin.Handlers
                         familyDoc.SaveAs(temporaryPath, new SaveAsOptions { OverwriteExistingFile = false });
                     FailureControl.ThrowIfStopped();
                     if (!File.Exists(temporaryPath)) throw new IOException("Revit did not create the temporary family file.");
+                    // Second guard: a third-party event could have activated the family mid-operation.
                     if (IsActiveDocument(app, familyDoc))
-                        throw new IOException("The saved temporary family is Revit's active document and cannot be closed through Document.Close. It remains open for user review; the requested output was not written.");
+                        throw new IOException("The saved temporary family became Revit's active document and cannot be closed through Document.Close. It remains open for user review; the requested output was not written.");
                     closeAttempted = true;
                     if (!McpDocument.Close(familyDoc, false))
                         throw new IOException("Revit did not close the temporary family document. The saved temporary file was retained; the requested output was not written.");
                     familyDoc = null;
-                closed = true;
+                    closed = true;
                     stage = "renaming the temporary family to output_path";
                     File.Move(temporaryPath, outputPath);
                     saved = true;
@@ -182,7 +191,7 @@ namespace RvtMcp.Plugin.Handlers
                             {
                                 // RevitAPI Document.Close explicitly rejects the active document.
                                 // Never activate another document or close the user's document to force cleanup.
-                                closeError = "The new family is Revit's active document, which Document.Close cannot close. It remains open for user review; the requested output was not written.";
+                                closeError = "The new family is Revit's active document, which Document.Close cannot close. Close or save it manually in Revit before retrying.";
                             }
                             else
                             {
@@ -197,12 +206,22 @@ namespace RvtMcp.Plugin.Handlers
                         var cleanupError = closed || familyDoc == null
                             ? ParametricFamilyInput.DeleteTemporaryFile(temporaryPath)
                             : "The owned family document remains open; its temporary file, if created, was retained for inspection at " + temporaryPath + ".";
-                        outcome = CommandResult.Fail("Family creation failed; no requested output file was written. "
+                        // The family is fully discarded only when its document was actually closed
+                        // (or never opened) AND the temporary file was deleted. Anything still open
+                        // or still on disk must be reported as retained, not as clean rollback.
+                        var fullyDiscarded = (closed || familyDoc == null) && cleanupError == null;
+                        if (fullyDiscarded && FailureControl.Active != null)
+                            FailureControl.Active.MarkPrivateFamilyDiscarded();
+                        var lifecycle = "Family creation failed; no requested output file was written. "
                             + (closed ? "The family document was closed without saving to output_path. "
                                 : familyDoc == null ? "No family document was opened or it was already closed. "
                                 : "The family document was not closed; see the lifecycle detail. ")
                             + (cleanupError == null ? "No temporary or output file was left behind. " : cleanupError + " ")
-                            + (closeError == null ? "" : closeError + " ") + "Failure stage: " + stage + ". " + ex.Message);
+                            + (closeError == null ? "" : closeError + " ") + "Failure stage: " + stage + ". " + ex.Message;
+                        outcome = CommandResult.Fail(lifecycle);
+                        // Keep the full diagnostic as structured data so FailureControl.Complete can
+                        // preserve it when a native stop replaces result.Error with a bare stop code.
+                        outcome.Data = new JObject { ["lifecycle_diagnostic"] = lifecycle };
                     }
                 }
             }

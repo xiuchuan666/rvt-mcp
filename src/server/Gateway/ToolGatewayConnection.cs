@@ -77,9 +77,11 @@ namespace RvtMcp.Server
         internal static Action BeforeWriteForTests;
         private static readonly DialogAnswerSession DialogAnswers = new DialogAnswerSession();
 
-        // Capture the add-in's shared native activation stamp before dispatch. Unlike the
-        // gateway binding generation this changes when the user opens/closes/activates a
-        // document in Revit, so a queued family call cannot reuse an A confirmation for B.
+        // Capture the add-in's shared native document/view lifecycle stamp (independent slot from
+        // the dialog-answer document stamp). Used only for create_parametric_family. Sampled inside
+        // the write lock, immediately before the request is serialized, so it detects a document or
+        // view change during queueing. Confirmation-time identity (Home vs project A vs project B)
+        // is enforced separately by expected_document_id / ToolReadPolicy.DocumentRejection.
         internal static Func<string, long?> ReadContextStampForTests { get; set; }
         internal static long? FamilyContextStamp()
         {
@@ -87,8 +89,11 @@ namespace RvtMcp.Server
             if (record == null) return null;
             return ReadContextStampForTests != null
                 ? ReadContextStampForTests(record.TargetId)
-                : DialogDocumentContext.Read(record.TargetId);
+                : DialogDocumentContext.ReadFamily(record.TargetId);
         }
+
+        internal static bool IsFamilyCommand(string command) =>
+            string.Equals(command, "create_parametric_family", StringComparison.OrdinalIgnoreCase);
 
         internal static JObject ConfigureDialogAnswers(JArray answers, string scope, bool clear)
         {
@@ -677,7 +682,6 @@ namespace RvtMcp.Server
                     // Lets the add-in tell an unconfirmed document from a gateway that predates confirmation.
                     document_protocol = 1,
                     expected_document_id = binding.Snapshot().Record?.DocumentId,
-                    expected_context_generation = command == "create_parametric_family" ? FamilyContextStamp() : (long?)null,
                     script_protocol = script == null ? (int?)null : ScriptLimits.ProtocolVersion,
                     script
                 }, JsonSerializer.Create(RequestJsonSettings));
@@ -750,6 +754,16 @@ namespace RvtMcp.Server
                                         final["_script"]["telemetry_status"] = "write_failed";
                                 });
                             _pending[id] = pending;
+                            // Sample the family lifecycle stamp inside the write lock, as late as
+                            // possible before serialization, so a document/view change during
+                            // queueing is caught at the add-in execution boundary. (The family
+                            // slot is independent of dialog answers; reading it here is cheap.)
+                            if (IsFamilyCommand(command))
+                            {
+                                requestObject["expected_context_generation"] = FamilyContextStamp();
+                                request = requestObject.ToString(Formatting.None);
+                                if (scriptReceipt != null) scriptReceipt["wire_request_bytes"] = ScriptIdentity.Utf8Bytes(request);
+                            }
                             // From here a write may partially reach Revit. Never replay a next declaration.
                             if (declared != null) DialogAnswers.Sending();
                             current = true;

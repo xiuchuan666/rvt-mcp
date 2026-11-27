@@ -361,6 +361,16 @@ namespace RvtMcp.Plugin.Failures
             internal readonly bool IsRead;
             private readonly bool _opensModel;
             internal bool Stopped, Cancelled, BatchRolledBack, AnyCommitted, NativeCommitted, StorageFailed, Persisted, ExecutionStarted;
+            // Commits that happened only on tool-owned temporary family documents. Not external mutation.
+            internal int PrivateTransientCommits;
+            // Set by a handler only after every tool-owned temporary family document was closed without
+            // saving to the requested output AND its temporary .rfa was deleted. Lets the failure
+            // receipt report a discarded private family as no external mutation rather than partial.
+            internal bool PrivateFamilyDiscarded { get; private set; }
+
+            // Available on every shell (the field above is read on all of them); only the R27 family
+            // handler calls it. A method keeps the assignment inside shared code for all TFMs.
+            internal void MarkPrivateFamilyDiscarded() { PrivateFamilyDiscarded = true; }
             internal string ErrorCode;
             internal string FailureModelKey;
             internal string OpenPath;
@@ -689,10 +699,28 @@ namespace RvtMcp.Plugin.Failures
                     ExecutionStarted = ExecutionStarted, HandlerSucceeded = result?.Success == true,
                     IsReadOnly = IsRead, HasPersistedRecord = Persisted, HasIncidents = Incidents.Count > 0,
                     PolicyStopped = Stopped, NativeCancelled = Cancelled, GroupRolledBack = BatchRolledBack,
-                    AnyCommittedChanges = AnyCommitted, NativeCommitted = NativeCommitted,
+                    AnyCommittedChanges = AnyCommitted,
+                    // A saved temporary family file that was fully discarded (document closed, temp
+                    // file deleted) is not an external commit: nothing survived the failed call.
+                    NativeCommitted = NativeCommitted && !PrivateFamilyDiscarded,
                     StorageFailed = StorageFailed, NativeOutcomeUnknown = NativeOutcome == "unknown",
                     ActiveDocumentObserved = _activeDocumentBeforeObserved && activeDocumentAfterObserved
                 });
+                // Private transient commits carry no external effect once the owned temporary family
+                // was discarded and deleted. Recompute the receipt so such failures are not reported
+                // as mutationApplied:true / outcome:partial when no project/user document changed.
+                if (PrivateFamilyDiscarded && !AnyCommitted && !NativeCommitted && PrivateTransientCommits > 0)
+                {
+                    FailureCompletion.Apply(Operation, new FailureCompletionFacts
+                    {
+                        ExecutionStarted = ExecutionStarted, HandlerSucceeded = result?.Success == true,
+                        IsReadOnly = IsRead, HasPersistedRecord = Persisted, HasIncidents = Incidents.Count > 0,
+                        PolicyStopped = Stopped, NativeCancelled = Cancelled, GroupRolledBack = BatchRolledBack,
+                        AnyCommittedChanges = false, NativeCommitted = false,
+                        StorageFailed = StorageFailed, NativeOutcomeUnknown = NativeOutcome == "unknown",
+                        ActiveDocumentObserved = _activeDocumentBeforeObserved && activeDocumentAfterObserved
+                    });
+                }
                 if (Operation.RequiresReview)
                 {
                     foreach (var key in Operation.ModelScopeKeys.Where(k => !Incidents.Any(i => i.ModelScopeKey == k && i.State == "open")).ToList())
@@ -704,7 +732,21 @@ namespace RvtMcp.Plugin.Failures
                         try { Record(incident); } catch { StorageFailure(); }
                     }
                 }
-                if (Stopped && result != null) { result.Success = false; result.Error = ErrorCode ?? "REVIT_FAILURE_ROLLED_BACK"; }
+                if (Stopped && result != null)
+                {
+                    // The native stop code is the authoritative error, but a typed handler's detailed
+                    // lifecycle diagnostics (e.g. retained temporary .rfa path, close/cleanup state)
+                    // must survive. Preserve them as structured data instead of losing them to the
+                    // bare error code when the stop overwrites result.Error.
+                    if (!string.IsNullOrEmpty(result.Error) && result.Error != (ErrorCode ?? "REVIT_FAILURE_ROLLED_BACK"))
+                    {
+                        var data = result.Data as JObject ?? new JObject();
+                        if (data["lifecycle_diagnostic"] == null) data["lifecycle_diagnostic"] = result.Error;
+                        result.Data = data;
+                    }
+                    result.Success = false;
+                    result.Error = ErrorCode ?? "REVIT_FAILURE_ROLLED_BACK";
+                }
             }
 
             internal void Enrich(JObject envelope)

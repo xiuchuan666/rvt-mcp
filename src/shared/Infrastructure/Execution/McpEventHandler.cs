@@ -99,8 +99,12 @@ namespace RvtMcp.Plugin
                             Failures.FailureControl.ObserveDialogDocument(app.ActiveUIDocument?.Document);
                             RvtMcp.Failures.DialogDocumentContext.RequireCurrent(Failures.FailureControl.DialogContext, request.DialogAnswerContext);
                         }
-                        if (request.CommandName == "create_parametric_family")
+                        if (string.Equals(request.CommandName, "create_parametric_family", StringComparison.OrdinalIgnoreCase))
                         {
+                            // Observe the current active document first: if the document identity
+                            // changed in the Closing→Closed gap (before OnIdling ran), this bumps the
+                            // family stamp so the comparison below cannot pass on a stale dispatch.
+                            Failures.FailureControl.ObserveDialogDocument(app.ActiveUIDocument?.Document);
                             var contextRejection = RvtMcp.Failures.DialogDocumentContext.FamilyRejection(
                                 Failures.FailureControl.DialogContext, request.ExpectedContextGeneration);
                             if (contextRejection != null) throw new InvalidOperationException(contextRejection);
@@ -406,7 +410,8 @@ namespace RvtMcp.Plugin
                     failureScope?.Enrich(errorEnvelope);
                     if (actualTarget != null) errorEnvelope["_target"] = actualTarget;
                     if (exError.StartsWith("DOCUMENT_UNCONFIRMED:", StringComparison.Ordinal)
-                        || exError.StartsWith("DOCUMENT_CHANGED:", StringComparison.Ordinal))
+                        || exError.StartsWith("DOCUMENT_CHANGED:", StringComparison.Ordinal)
+                        || exError.StartsWith("DOCUMENT_CONTEXT_CHANGED:", StringComparison.Ordinal))
                         errorEnvelope["_operation"] = new JObject
                         {
                             ["operationId"] = PendingRequestLifecycle.For(request.Tcs).OperationId,

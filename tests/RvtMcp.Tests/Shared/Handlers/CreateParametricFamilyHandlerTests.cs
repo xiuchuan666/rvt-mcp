@@ -76,16 +76,19 @@ public sealed class CreateParametricFamilyHandlerTests
     }
 
     [Fact]
-    public void Active_family_is_never_closed_and_temporary_file_is_retained_for_review()
+    public void Active_family_is_never_closed_and_never_saved_when_revit_activates_it_on_open()
     {
         var result = R27Probe.Value("active_document");
         Assert.False(result.Value<bool>("success"));
         Assert.Contains("active document", result.Value<string>("error"));
         Assert.Contains("remains open for user review", result.Value<string>("error"));
         Assert.Contains("no requested output file was written", result.Value<string>("error"));
+        // Fail-fast at NewFamilyDocument: no transaction, no SaveAs, no temp file, no close attempt.
         Assert.Equal(0, result.Value<int>("document_closes"));
+        Assert.Equal(0, result.Value<int>("saves"));
+        Assert.Equal(0, result.Value<int>("transaction_commits"));
         Assert.False(result.Value<bool>("output_exists"));
-        Assert.Single(result["temporary_files"]!);
+        Assert.Empty(result["temporary_files"]!);
     }
 
     [Fact]
@@ -118,6 +121,44 @@ public sealed class CreateParametricFamilyHandlerTests
         Assert.False(result.Value<bool>("output_exists"));
         Assert.Single(result["temporary_files"]!);
         Assert.Equal(1, result.Value<int>("document_closes"));
+    }
+
+    [Fact]
+    public void A_family_activated_after_save_is_never_closed_and_keeps_its_temporary_file()
+    {
+        // Second IsActiveDocument guard: a third-party event activated the family during SaveAs.
+        var result = R27Probe.Value("active_after_save");
+        Assert.False(result.Value<bool>("success"));
+        Assert.Contains("active document", result.Value<string>("error"));
+        Assert.Contains("remains open for user review", result.Value<string>("error"));
+        Assert.Equal(1, result.Value<int>("saves"));
+        Assert.Equal(0, result.Value<int>("document_closes"));
+        Assert.False(result.Value<bool>("output_exists"));
+        Assert.Single(result["temporary_files"]!);
+    }
+
+    [Fact]
+    public void Fully_discarded_family_is_marked_private_and_diagnostic_survives_in_structured_data()
+    {
+        // save_failure: authorization throws before SaveAs; the owned family is closed and no temp
+        // file exists, so the private-family-discarded flag is set and no external mutation is implied.
+        var result = R27Probe.Value("save_failure");
+        Assert.False(result.Value<bool>("success"));
+        Assert.True(result.Value<bool>("private_family_discarded"));
+        var diagnostic = result["data"]?.Value<string>("lifecycle_diagnostic");
+        Assert.False(string.IsNullOrEmpty(diagnostic));
+        Assert.Contains("no requested output file was written", diagnostic);
+    }
+
+    [Fact]
+    public void Retained_open_family_is_not_marked_as_fully_discarded()
+    {
+        // close_false: the document stayed open, so PrivateFamilyDiscarded must remain false even
+        // though no output was written — the temporary family still exists for user review.
+        var result = R27Probe.Value("close_false");
+        Assert.False(result.Value<bool>("success"));
+        Assert.False(result.Value<bool>("private_family_discarded"));
+        Assert.False(string.IsNullOrEmpty(result["data"]?.Value<string>("lifecycle_diagnostic")));
     }
 
     [Fact]
@@ -278,20 +319,26 @@ namespace Autodesk.Revit.DB {
   public bool IsFamilyDocument=>true; public bool IsValidObject=true; public bool IsWorkshared=>false; public void Regenerate(){}
   public Element GetElement(ElementId id)=>Items.Single(e=>e.Id.Value==id.Value);
   public void SaveAs(string path,SaveAsOptions o){Saves++;File.WriteAllText(path,"seam");SaveLock=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.None);LockedWhileSaved=true;
-   if(Scenario=="save_failure"){SaveLock.Dispose();SaveLock=null;throw new Exception("save refused");}}
+   if(Scenario=="save_failure"){SaveLock.Dispose();SaveLock=null;throw new Exception("save refused");}
+   if(Scenario=="active_after_save"&&OwnerApp!=null)OwnerApp.ActiveUIDocument=new Autodesk.Revit.UI.UIDocument{Document=this}; }
+  public Autodesk.Revit.UI.UIApplication OwnerApp;
   public void ReleaseFailedCloseLock(){if(Scenario=="close_false"||Scenario=="close_exception"){SaveLock?.Dispose();SaveLock=null;}}
   public bool Close(bool save){Closes++;if(Scenario=="close_exception")throw new Exception("close refused");if(Scenario=="close_false")return false;
    SaveLockReleasedOnClose=SaveLock!=null;SaveLock?.Dispose();SaveLock=null;return true;} }
 }
 namespace Autodesk.Revit.ApplicationServices { public class Application { public static int Opens; public Autodesk.Revit.DB.Document Last; public Autodesk.Revit.UI.UIApplication Owner;
- public Autodesk.Revit.DB.Document NewFamilyDocument(string path){Opens++;if(Autodesk.Revit.DB.Document.Scenario=="template_failure")throw new Exception("bad template");Last=new Autodesk.Revit.DB.Document();Documents.Add(Last);if(Autodesk.Revit.DB.Document.Scenario=="active_document")Owner.ActiveUIDocument=new Autodesk.Revit.UI.UIDocument{Document=Last};return Last;} public System.Collections.Generic.List<Autodesk.Revit.DB.Document> Documents=new System.Collections.Generic.List<Autodesk.Revit.DB.Document>(); } }
+ public Autodesk.Revit.DB.Document NewFamilyDocument(string path){Opens++;if(Autodesk.Revit.DB.Document.Scenario=="template_failure")throw new Exception("bad template");Last=new Autodesk.Revit.DB.Document();Last.OwnerApp=Owner;Documents.Add(Last);if(Autodesk.Revit.DB.Document.Scenario=="active_document")Owner.ActiveUIDocument=new Autodesk.Revit.UI.UIDocument{Document=Last};return Last;} public System.Collections.Generic.List<Autodesk.Revit.DB.Document> Documents=new System.Collections.Generic.List<Autodesk.Revit.DB.Document>(); } }
 namespace Autodesk.Revit.UI { public class UIDocument { public Autodesk.Revit.DB.Document Document; } public class UIApplication { public Autodesk.Revit.ApplicationServices.Application Application=new Autodesk.Revit.ApplicationServices.Application(); public UIDocument ActiveUIDocument; public UIApplication(){Application.Owner=this;} } }
 namespace RvtMcp.Plugin { public interface IRevitCommand {} public class CommandResult { public bool Success; public string Error; public object Data;
  public static CommandResult Ok(object data)=>new CommandResult{Success=true,Data=data}; public static CommandResult Fail(string error)=>new CommandResult{Error=error}; } }
-namespace RvtMcp.Plugin.Failures { public static class FailureControl { public static IDisposable AuthorizeFamilySave(Autodesk.Revit.DB.Document doc,string path) { if(Autodesk.Revit.DB.Document.Scenario=="save_failure")throw new Exception("native save authorization refused");return null; }
+namespace RvtMcp.Plugin.Failures { public static class FailureControl {
+ public class Scope { public bool PrivateFamilyDiscarded { get; private set; } public void MarkPrivateFamilyDiscarded(){PrivateFamilyDiscarded=true;} }
+ public static Scope Active=new Scope();
+ public static IDisposable AuthorizeFamilySave(Autodesk.Revit.DB.Document doc,string path) { if(Autodesk.Revit.DB.Document.Scenario=="save_failure")throw new Exception("native save authorization refused");return null; }
  public static void ThrowIfStopped(){} } }
 public static class Probe { public static string Run(string scenario){
  Autodesk.Revit.DB.Document.Scenario=scenario; Autodesk.Revit.ApplicationServices.Application.Opens=0;
+ RvtMcp.Plugin.Failures.FailureControl.Active=new RvtMcp.Plugin.Failures.FailureControl.Scope();
  var dir=Path.Combine(Path.GetTempPath(),"rvtmcp-family-probe-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(dir);Autodesk.Revit.DB.Document doc=null;
  try { var template=Path.Combine(dir,"template.rft");File.WriteAllText(template,"seam");var output=Path.Combine(dir,"result.rfa");
  var request=new JObject{["family_name"]="Cabinet",["template_path"]=template,["output_path"]=output,["length_mm"]=scenario=="invalid_dimensions"?0:1200,["width_mm"]=600,["height_mm"]=900};
@@ -301,6 +348,7 @@ public static class Probe { public static string Run(string scenario){
   ["temporary_files"]=new JArray(Directory.GetFiles(dir,".rvtmcp-*.rfa")),["initial_type_was_null"]=doc?.InitialTypeWasNull??false,["new_parameter_wrappers"]=doc?.NewParameterWrappers??false,
   ["save_lock_released_on_close"]=doc?.SaveLockReleasedOnClose??false,["locked_while_saved"]=doc?.LockedWhileSaved??false,["new_types"]=doc?.NewTypes??0,["new_parameters"]=doc?.NewParameters??0,
   ["set_values"]=doc?.SetValues??0,["labelled_dimensions_and_extrusion_associations"]=doc?.Associations??0,
+  ["private_family_discarded"]=RvtMcp.Plugin.Failures.FailureControl.Active.PrivateFamilyDiscarded,
   ["locked_profile_alignments"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>d.IsLocked)??0}.ToString(); }
  finally { doc?.ReleaseFailedCloseLock();try{Directory.Delete(dir,true);}catch{} } } }
 """;

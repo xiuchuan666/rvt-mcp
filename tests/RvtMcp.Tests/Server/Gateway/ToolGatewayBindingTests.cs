@@ -173,7 +173,7 @@ namespace RvtMcp.Tests
                                 var target = TargetStamp?.Value<string>("target_id") ?? "";
                                 var stamp = ToolGateway.ReadContextStampForTests != null
                                     ? ToolGateway.ReadContextStampForTests(target)
-                                    : DialogDocumentContext.Read(target);
+                                    : DialogDocumentContext.ReadFamily(target);
                                 documentError = stamp == req.Value<long?>("expected_context_generation") ? null
                                     : "DOCUMENT_CONTEXT_CHANGED: family context changed before execution.";
                             }
@@ -373,29 +373,31 @@ namespace RvtMcp.Tests
             var success = await Send("create_parametric_family");
             Assert.True(success.Value<bool>("ok"), success.ToString());
             var request = Assert.Single(host.Requests);
-            Assert.Equal(context.Stamp, request.Value<long>("expected_context_generation"));
+            Assert.Equal(context.FamilyStamp, request.Value<long>("expected_context_generation"));
             Assert.Equal(confirmedDocument, request.Value<string>("expected_document_id"));
 
             // Real gateway + shared-memory + NDJSON sequence: confirmed A cannot execute after B.
-            context.Invalidate();
+            // Confirmation-time identity (A vs B) is enforced by expected_document_id, not the stamp.
+            context.InvalidateFamily();
             host.TargetStamp["document_id"] = "doc-b";
             var changed = await Send("create_parametric_family");
             Assert.StartsWith("DOCUMENT_CHANGED:", changed.Value<string>("error"));
             Assert.Equal(1, host.Commands.Count(c => c == "create_parametric_family"));
 
-            context.Invalidate();
+            context.InvalidateFamily();
             host.TargetStamp["document_id"] = confirmedDocument;
             host.ResponseOverride = req => {
-                var current = DialogDocumentContext.Read(targetId);
+                var current = DialogDocumentContext.ReadFamily(targetId);
                 var expected = req.Value<long?>("expected_context_generation");
                 if (current == expected) return new JObject { ["id"] = req["id"], ["success"] = true, ["data"] = new JObject { ["ok"] = true } };
                 return new JObject { ["id"] = req["id"], ["success"] = false,
                     ["error"] = "DOCUMENT_CONTEXT_CHANGED: family context changed before execution.",
                     ["_operation"] = new JObject { ["outcome"] = "not_started", ["mutationApplied"] = false } };
             };
-            // Model the exact queue delay that must reject a stale dispatch: the native
-            // stamp changes after WriteLine but before the host evaluates its execution guard.
-            var stamp = context.Stamp;
+            // Model the exact queue delay that must reject a stale dispatch: the native family stamp
+            // changes after WriteLine but before the host evaluates its execution guard. The stamp is
+            // sampled inside the write lock (first read), so the second read at the host differs.
+            var stamp = context.FamilyStamp;
             var reads = 0;
             var previousRead = ToolGateway.ReadContextStampForTests;
             ToolGateway.ReadContextStampForTests = _ => ++reads == 2 ? stamp + 1 : stamp;

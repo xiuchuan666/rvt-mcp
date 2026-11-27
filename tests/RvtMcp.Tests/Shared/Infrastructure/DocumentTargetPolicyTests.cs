@@ -70,14 +70,39 @@ namespace RvtMcp.Tests
         public void Independent_family_authoring_rejects_a_changed_native_document_context()
         {
             using var context = new RvtMcp.Failures.DialogDocumentContext("family-policy-test-" + System.Guid.NewGuid().ToString("N"));
-            Assert.Null(RvtMcp.Failures.DialogDocumentContext.FamilyRejection(context, context.Stamp));
+            Assert.Null(RvtMcp.Failures.DialogDocumentContext.FamilyRejection(context, context.FamilyStamp));
             Assert.StartsWith("DOCUMENT_CONTEXT_CHANGED:",
-                RvtMcp.Failures.DialogDocumentContext.FamilyRejection(context, context.Stamp - 1));
+                RvtMcp.Failures.DialogDocumentContext.FamilyRejection(context, context.FamilyStamp - 1));
+            // Bumping the family slot must NOT touch the dialog-answer document stamp (offset 0),
+            // and vice versa: the two slots are independent by design.
+            var documentStamp = context.Stamp;
+            context.InvalidateFamily();
+            Assert.Equal(documentStamp, context.Stamp);
+            Assert.StartsWith("DOCUMENT_CONTEXT_CHANGED:",
+                RvtMcp.Failures.DialogDocumentContext.FamilyRejection(context, context.FamilyStamp - 1));
+            // A document-identity change alone does not invalidate the family lifecycle stamp.
+            var familyStamp = context.FamilyStamp;
             context.Invalidate();
-            Assert.StartsWith("DOCUMENT_CONTEXT_CHANGED:",
-                RvtMcp.Failures.DialogDocumentContext.FamilyRejection(context, context.Stamp - 1));
+            Assert.Equal(familyStamp, context.FamilyStamp);
             Assert.StartsWith("DOCUMENT_CONTEXT_CHANGED:",
                 RvtMcp.Failures.DialogDocumentContext.FamilyRejection(null, 12));
+        }
+
+        [Fact]
+        public void Family_and_dialog_slots_are_independent_in_shared_memory()
+        {
+            var target = "family-slots-" + System.Guid.NewGuid().ToString("N");
+            using var context = new RvtMcp.Failures.DialogDocumentContext(target);
+            var docStamp = RvtMcp.Failures.DialogDocumentContext.Read(target);
+            var familyStamp = RvtMcp.Failures.DialogDocumentContext.ReadFamily(target);
+            Assert.Equal(context.Stamp, docStamp);
+            Assert.Equal(context.FamilyStamp, familyStamp);
+            context.InvalidateFamily();
+            Assert.Equal(docStamp, RvtMcp.Failures.DialogDocumentContext.Read(target));
+            Assert.Equal(familyStamp + 1, RvtMcp.Failures.DialogDocumentContext.ReadFamily(target));
+            context.Invalidate();
+            Assert.Equal(docStamp + 1, RvtMcp.Failures.DialogDocumentContext.Read(target));
+            Assert.Equal(familyStamp + 1, RvtMcp.Failures.DialogDocumentContext.ReadFamily(target));
         }
 
         [Fact]

@@ -140,6 +140,32 @@ namespace RvtMcp.Tests
             Assert.Contains("outcome.Error", toastArgs);
         }
 
+        [Fact]
+        public void Every_shell_parses_expected_context_generation_so_older_versions_reach_unsupported_version()
+        {
+            // P0-3 regression guard: if any R22–R26 shell drops expected_context_generation, the shared
+            // McpEventHandler family guard would fail closed with DOCUMENT_CONTEXT_CHANGED before the
+            // handler can return UNSUPPORTED_VERSION. All six shells must parse the field identically.
+            var root = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(ReadSourcePath())!, "..", "..", "..", ".."));
+            foreach (var year in new[] { "22", "23", "24", "25", "26", "27" })
+            {
+                var source = File.ReadAllText(Path.Combine(root, "src", "plugin-r" + year, "App.cs"));
+                Assert.Contains("ExpectedContextGeneration = request.Value<long?>(\"expected_context_generation\")", source);
+            }
+        }
+
+        [Fact]
+        public void Family_document_context_rejection_emits_a_not_started_operation_receipt()
+        {
+            // P1-1 regression guard: DOCUMENT_CONTEXT_CHANGED must produce the same not_started
+            // _operation receipt as DOCUMENT_UNCONFIRMED / DOCUMENT_CHANGED.
+            var source = ReadSource("Infrastructure/Execution", "McpEventHandler.cs");
+            var block = source.Substring(source.IndexOf("DOCUMENT_UNCONFIRMED:", StringComparison.Ordinal));
+            Assert.Contains("DOCUMENT_CONTEXT_CHANGED:", block.Substring(0, block.IndexOf("};", StringComparison.Ordinal)));
+        }
+
+        private static string ReadSourcePath([CallerFilePath] string testFile = "") => testFile;
+
         private static string ReadSource(string folder, string file, [CallerFilePath] string testFile = "")
         {
             var root = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(testFile)!, "..", "..", "..", ".."));

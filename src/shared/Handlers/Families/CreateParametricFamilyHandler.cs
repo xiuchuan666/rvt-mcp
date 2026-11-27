@@ -341,13 +341,13 @@ namespace RvtMcp.Plugin.Handlers
             // Align only after native model-curve references exist; the geometry is already aligned.
             var plan = SelectFamilyPlan(doc);
             stage = "creating labelled Length and Width dimensions and origin EQ constraints";
-            var constraints = CreateNamedPlanes(doc, plan, parameters, dimensions);
+            var constraints = CreateNamedPlanes(doc, manager, plan, parameters, dimensions);
             stage = "locking native ModelCurve profile edges to reference planes";
             constraints.Alignments.AddRange(CreateExtrusionProfileConstraints(doc, plan, extrusion));
             return constraints;
         }
 
-        private static ConstraintSet CreateNamedPlanes(Document doc, ViewPlan plan,
+        private static ConstraintSet CreateNamedPlanes(Document doc, FamilyManager manager, ViewPlan plan,
             IReadOnlyDictionary<string, FamilyParameter> parameters, double[] dimensions)
         {
             var factory = doc.FamilyCreate;
@@ -375,10 +375,25 @@ namespace RvtMcp.Plugin.Handlers
             var constraints = new ConstraintSet();
             constraints.Dimensions.Add(dimension);
             constraints.Dimensions.Add(width);
-            constraints.Equalities.Add(CreateOriginEquality(doc, factory, plan, left, right,
-                Line.CreateBound(new XYZ(-halfLength, 0, 0), new XYZ(halfLength, 0, 0)), true));
-            constraints.Equalities.Add(CreateOriginEquality(doc, factory, plan, back, front,
-                Line.CreateBound(new XYZ(0, -halfWidth, 0), new XYZ(0, halfWidth, 0)), false));
+            // Use two separate half-length dimensions + formula instead of a three-reference EQ
+            // dimension. The three-reference EQ pattern (first/origin/second with AreSegmentsEqual)
+            // is documented in the Autodesk forum, but real Revit 2027.4 rejects the references at
+            // transaction.Commit() with "One or more dimension references are or have become invalid".
+            // Two independent two-reference dimensions labeled to hidden half-parameters, with the
+            // full Length/Width driven by formula, achieves the same origin-centering without the
+            // multi-reference commit instability.
+            var halfLengthParam = GetOrCreateHalfParameter(manager, "Length");
+            var halfWidthParam = GetOrCreateHalfParameter(manager, "Width");
+            manager.SetFormula(parameters["Length"], halfLengthParam.Definition.Name + " * 2");
+            manager.SetFormula(parameters["Width"], halfWidthParam.Definition.Name + " * 2");
+            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, left, halfLengthParam,
+                Line.CreateBound(new XYZ(-halfLength, 0, 0), new XYZ(0, 0, 0)), true));
+            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, right, halfLengthParam,
+                Line.CreateBound(new XYZ(0, 0, 0), new XYZ(halfLength, 0, 0)), true));
+            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, back, halfWidthParam,
+                Line.CreateBound(new XYZ(0, -halfWidth, 0), new XYZ(0, 0, 0)), false));
+            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, front, halfWidthParam,
+                Line.CreateBound(new XYZ(0, 0, 0), new XYZ(0, halfWidth, 0)), false));
             return constraints;
         }
 
@@ -400,8 +415,22 @@ namespace RvtMcp.Plugin.Handlers
             return plane.GetReference();
         }
 
-        private static Dimension CreateOriginEquality(Document doc, FamilyItemFactory factory, ViewPlan plan,
-            ReferencePlane first, ReferencePlane second, Line line, bool vertical)
+        // Creates a two-reference dimension from a side plane to the origin center plane,
+        // labeled to a hidden half-parameter (e.g. "_HalfLength"). The full Length/Width
+        // parameters are driven by formula = half * 2, which centers the geometry on the origin.
+        private static Dimension CreateHalfDimension(Document doc, FamilyItemFactory factory, ViewPlan plan,
+            ReferencePlane side, FamilyParameter halfParam, Line line, bool vertical)
+        {
+            var origin = FindCenterPlane(doc, vertical);
+            var references = new ReferenceArray();
+            references.Append(PlaneReference(side, plan));
+            references.Append(PlaneReference(origin, plan));
+            var dimension = factory.NewDimension(plan, line, references);
+            dimension.FamilyLabel = halfParam;
+            return dimension;
+        }
+
+        private static ReferencePlane FindCenterPlane(Document doc, bool vertical)
         {
             var origin = new FilteredElementCollector(doc).OfClass(typeof(ReferencePlane))
                 .Cast<ReferencePlane>().FirstOrDefault(p =>
@@ -413,15 +442,25 @@ namespace RvtMcp.Plugin.Handlers
                 });
             if (origin == null)
                 throw new InvalidOperationException("The family template must contain both center reference planes at the origin, as in a standard 3D family template.");
-            var references = new ReferenceArray();
-            references.Append(PlaneReference(first, plan));
-            references.Append(PlaneReference(origin, plan));
-            references.Append(PlaneReference(second, plan));
-            var dimension = factory.NewDimension(plan, line, references);
-            dimension.AreSegmentsEqual = true;
-            if (!dimension.AreSegmentsEqual)
-                throw new InvalidOperationException("Revit did not create a persistent EQ constraint about the family origin.");
-            return dimension;
+            return origin;
+        }
+
+        private static FamilyParameter GetOrCreateHalfParameter(FamilyManager manager, string fullName)
+        {
+            var name = "_Half" + fullName;
+            var existing = manager.GetParameters().FirstOrDefault(p => p.Definition.Name == name);
+            if (existing != null)
+            {
+                if (existing.IsInstance || existing.IsReporting || existing.StorageType != StorageType.Double
+                    || existing.GetUnitTypeId() != SpecTypeId.Length || existing.Formula != null
+                    || existing.AssociatedParameters.Size != 0)
+                    throw new InvalidOperationException("The family template has an incompatible parameter named " + name + ".");
+                return existing;
+            }
+            var parameter = manager.AddParameter(name, GroupTypeId.Geometry, SpecTypeId.Length, false);
+            if (parameter == null || manager.CurrentType.AsDouble(parameter) == null)
+                throw new InvalidOperationException("Family parameter " + name + " did not expose a numeric length value.");
+            return parameter;
         }
 
         private static ReferenceArray RefArray(Reference first, Reference second)
@@ -493,8 +532,8 @@ namespace RvtMcp.Plugin.Handlers
             }
             var alignmentCount = constraints.Alignments.Select(doc.GetElement).OfType<Dimension>().Count(a => a.IsLocked);
             if (constraints.Dimensions.Count != 2 || alignmentCount != 4
-                || constraints.Equalities.Count != 2 || constraints.Equalities.Any(d => !d.AreSegmentsEqual))
-                throw new InvalidOperationException("Native constraint read-back did not find two labelled dimensions, two origin EQ constraints and four locked alignments.");
+                || constraints.Equalities.Count != 4 || constraints.Equalities.Any(d => d.FamilyLabel == null))
+                throw new InvalidOperationException("Native constraint read-back did not find two labelled dimensions, four origin half-dimensions and four locked alignments.");
             var solids = extrusion.get_Geometry(new Options())?.OfType<Solid>()
                 .Where(s => s.IsElementGeometry && s.Volume > 0).ToArray();
             if (solids == null || solids.Length == 0)

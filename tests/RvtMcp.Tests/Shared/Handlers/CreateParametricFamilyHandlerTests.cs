@@ -39,7 +39,7 @@ public sealed class CreateParametricFamilyHandlerTests
         });
         Assert.True(result.Value<bool>("initial_type_was_null"));
         Assert.True(result.Value<bool>("new_parameter_wrappers"));
-        Assert.Equal(3, result.Value<int>("labelled_dimensions_and_extrusion_associations"));
+        Assert.Equal(7, result.Value<int>("labelled_dimensions_and_extrusion_associations"));
         Assert.Equal(4, result.Value<int>("locked_profile_alignments"));
         Assert.Equal(1200, data["geometry"]!["bounding_box_mm"]!.Value<double>("length"), 6);
         Assert.Equal(600, data["geometry"]!["bounding_box_mm"]!.Value<double>("width"), 6);
@@ -48,7 +48,7 @@ public sealed class CreateParametricFamilyHandlerTests
         Assert.Equal(1, data["geometry"]!.Value<int>("solid_count"));
         Assert.Equal(4, data["geometry"]!.Value<int>("reference_plane_count"));
         Assert.Equal(2, data["geometry"]!.Value<int>("labelled_dimension_count"));
-        Assert.Equal(2, data["geometry"]!.Value<int>("origin_equality_count"));
+        Assert.Equal(4, data["geometry"]!.Value<int>("origin_equality_count"));
         Assert.Equal(4, data["geometry"]!.Value<int>("locked_alignment_count"));
         Assert.Equal(1, result.Value<int>("transaction_commits"));
         Assert.Equal(1, result.Value<int>("document_closes"));
@@ -167,7 +167,7 @@ public sealed class CreateParametricFamilyHandlerTests
         var result = R27Probe.Value("existing_compatible");
         Assert.True(result.Value<bool>("success"), result.Value<string>("error"));
         Assert.Equal(0, result.Value<int>("new_types"));
-        Assert.Equal(0, result.Value<int>("new_parameters"));
+        Assert.Equal(2, result.Value<int>("new_parameters")); // _HalfLength + _HalfWidth helpers
         Assert.Equal(3, result.Value<int>("set_values"));
     }
 
@@ -206,8 +206,8 @@ public sealed class CreateParametricFamilyHandlerTests
         var result = R27Probe.Value("success");
         Assert.True(result.Value<bool>("success"), result.Value<string>("error"));
         Assert.True(result.Value<bool>("dimensions_created_after_regeneration"));
-        Assert.Equal(3, result.Value<int>("labelled_dimensions_and_extrusion_associations"));
-        Assert.Equal(2, result.Value<int>("origin_equality_count"));
+        Assert.Equal(7, result.Value<int>("labelled_dimensions_and_extrusion_associations"));
+        Assert.Equal(4, result.Value<int>("origin_equality_count"));
     }
 
     [Fact]
@@ -318,6 +318,7 @@ namespace Autodesk.Revit.DB {
   public FamilyParameter AddParameter(string n,object g,object s,bool i){Doc.NewParameters++;var p=new FamilyParameter(Doc,n);Parameters.Add(p);return Copy(p);}
   public FamilyType NewType(string n){Doc.NewTypes++;CurrentType=new FamilyType(n);Types.Items.Add(CurrentType);return CurrentType;}
   public void Set(FamilyParameter p,double v){Parameters.Single(x=>x.Id.Value==p.Id.Value).Value=v;Doc.SetValues++;}
+  public void SetFormula(FamilyParameter p,string formula){Parameters.Single(x=>x.Id.Value==p.Id.Value).Formula=formula;}
   public void AssociateElementParameterToFamilyParameter(Parameter p,FamilyParameter f){var stored=Parameters.Single(x=>x.Id.Value==f.Id.Value);stored.AssociatedParameters.Size++;p.Definition=stored.Definition;Doc.Associations++;}
   public FamilyParameter GetAssociatedFamilyParameter(Parameter p)=>p.Definition==null?null:Copy(Parameters.Single(x=>x.Definition.Name==p.Definition.Name));
   private FamilyParameter Copy(FamilyParameter p)=>new FamilyParameter(Doc,p.Name){Id=p.Id,Value=p.Value,Formula=p.Formula}; }
@@ -376,8 +377,8 @@ public static class Probe { public static string Run(string scenario){
   ["temporary_files"]=new JArray(Directory.GetFiles(dir,".rvtmcp-*.rfa")),["initial_type_was_null"]=doc?.InitialTypeWasNull??false,["new_parameter_wrappers"]=doc?.NewParameterWrappers??false,
   ["save_lock_released_on_close"]=doc?.SaveLockReleasedOnClose??false,["locked_while_saved"]=doc?.LockedWhileSaved??false,["new_types"]=doc?.NewTypes??0,["new_parameters"]=doc?.NewParameters??0,
   ["set_values"]=doc?.SetValues??0,["labelled_dimensions_and_extrusion_associations"]=doc?.Associations??0,
-  ["dimensions_created_after_regeneration"]=(doc?.DimensionsAfterRegeneration??0)==4,
-  ["origin_equality_count"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>d.References==3)??0,
+  ["dimensions_created_after_regeneration"]=(doc?.DimensionsAfterRegeneration??0)==6,
+  ["origin_equality_count"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>d.References==2&&d.FamilyLabel!=null&&d.FamilyLabel.Name.StartsWith("_Half"))??0,
   ["private_family_discarded"]=RvtMcp.Plugin.Failures.FailureControl.Active.PrivateFamilyDiscarded,
   ["locked_profile_alignments"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>d.IsLocked)??0}.ToString(); }
  finally { doc?.ReleaseFailedCloseLock();try{Directory.Delete(dir,true);}catch{} } } }

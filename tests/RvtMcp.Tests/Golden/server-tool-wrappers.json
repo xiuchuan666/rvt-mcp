@@ -3942,7 +3942,7 @@
       "calls": [
         {
           "command": "probe_extrusion_sketch",
-          "params": "{\"model_path\":\"C:\\\\probe\\\\file.dat\",\"extrusion_id\":null,\"create_reference_plane\":false,\"create_dimension\":false}",
+          "params": "{\"model_path\":\"C:\\\\probe\\\\file.dat\",\"extrusion_id\":null,\"create_reference_plane\":false,\"create_dimension\":false,\"commit_probe\":false}",
           "timeout": null
         }
       ],
@@ -3952,7 +3952,7 @@
       "calls": [
         {
           "command": "probe_extrusion_sketch",
-          "params": "{\"model_path\":\"C:\\\\probe\\\\file.dat\",\"extrusion_id\":null,\"create_reference_plane\":false,\"create_dimension\":false}",
+          "params": "{\"model_path\":\"C:\\\\probe\\\\file.dat\",\"extrusion_id\":null,\"create_reference_plane\":false,\"create_dimension\":false,\"commit_probe\":false}",
           "timeout": null
         }
       ],

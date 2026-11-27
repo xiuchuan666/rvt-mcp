@@ -6487,9 +6487,13 @@
     },
     {
       "name": "revit_probe_extrusion_sketch",
-      "description_hash": "sha256:4ddab78e133d36f7268e6878dd64cba65705bdd6cb919b052d4d84334e2790cf",
+      "description_hash": "sha256:93497f581cbbe6266e39909d2a5b131d3d75e1b20c019802d44540b242086808",
       "inputSchema": {
         "properties": {
+          "commitProbe": {
+            "description": "",
+            "type": "Boolean"
+          },
           "createDimension": {
             "description": "",
             "type": "Boolean"

@@ -43,161 +43,162 @@ namespace RvtMcp.Plugin.Handlers
                 return CommandResult.Fail("model_path does not exist: " + modelPath);
 
             Document doc = null;
-            try
+            using (McpDocument.Begin(app))
             {
-                doc = app.Application.OpenDocumentFile(modelPath);
-                if (doc == null || !doc.IsFamilyDocument)
-                    return CommandResult.Fail("model_path did not open as a family document.");
-                var result = new JObject();
-                result["title"] = doc.Title;
-                result["family_manager"] = doc.FamilyManager != null;
-                if (doc.FamilyManager != null)
+                try
                 {
-                    var parameters = new JArray();
-                    foreach (FamilyParameter p in doc.FamilyManager.GetParameters())
+                    doc = McpDocument.TrackOpened(app.Application.OpenDocumentFile(modelPath));
+                    if (doc == null || !doc.IsFamilyDocument)
+                        return CommandResult.Fail("model_path did not open as a family document.");
+                    var result = new JObject();
+                    result["title"] = doc.Title;
+                    result["family_manager"] = doc.FamilyManager != null;
+                    if (doc.FamilyManager != null)
                     {
-                        parameters.Add(new JObject
+                        var parameters = new JArray();
+                        foreach (FamilyParameter p in doc.FamilyManager.GetParameters())
                         {
-                            ["name"] = p.Definition.Name,
-                            ["id"] = RevitCompat.GetId(p.Id),
-                            ["formula"] = p.Formula,
-                            ["is_reporting"] = p.IsReporting,
-                            ["is_instance"] = p.IsInstance,
-                            ["associated_count"] = p.AssociatedParameters.Size
+                            parameters.Add(new JObject
+                            {
+                                ["name"] = p.Definition.Name,
+                                ["id"] = RevitCompat.GetId(p.Id),
+                                ["formula"] = p.Formula,
+                                ["is_reporting"] = p.IsReporting,
+                                ["is_instance"] = p.IsInstance,
+                                ["associated_count"] = p.AssociatedParameters.Size
+                            });
+                        }
+                        result["parameters"] = parameters;
+                    }
+                    var extrusion = extrusionIdValue.HasValue
+                        ? doc.GetElement(RevitCompat.ToElementId(extrusionIdValue.Value)) as Extrusion
+                        : new FilteredElementCollector(doc).OfClass(typeof(Extrusion)).Cast<Extrusion>().FirstOrDefault();
+                    if (extrusion == null)
+                        return CommandResult.Fail("No Extrusion found in " + modelPath);
+                    result["extrusion_id"] = RevitCompat.GetId(extrusion.Id);
+                    result["extrusion_height"] = extrusion.get_Parameter(BuiltInParameter.EXTRUSION_END_PARAM)?.AsDouble();
+                    var sketch = extrusion.Sketch;
+                    if (sketch == null) return CommandResult.Fail("Extrusion has no Sketch.");
+                    var sketchPlane = sketch.SketchPlane;
+                    result["sketch_plane_id"] = sketchPlane != null ? RevitCompat.GetId(sketchPlane.Id) : -1;
+                    if (sketchPlane != null)
+                    {
+                        var plane = sketchPlane.GetPlane();
+                        result["sketch_plane_origin"] = Point(plane.Origin);
+                        result["sketch_plane_normal"] = Point(plane.Normal);
+                        result["sketch_plane_x"] = Point(plane.XVec);
+                        result["sketch_plane_y"] = Point(plane.YVec);
+                    }
+                    var curves = new JArray();
+                    foreach (var id in sketch.GetAllElements())
+                    {
+                        var curveElement = doc.GetElement(id) as ModelCurve;
+                        if (curveElement == null) continue;
+                        var curveInfo = new JObject();
+                        curveInfo["element_id"] = RevitCompat.GetId(curveElement.Id);
+                        curveInfo["geometry_curve_type"] = curveElement.GeometryCurve?.GetType().FullName;
+                        var reference = curveElement.GeometryCurve?.Reference;
+                        if (reference != null)
+                        {
+                            curveInfo["reference_element_id"] = reference.ElementId != null ? RevitCompat.GetId(reference.ElementId) : -1;
+                            curveInfo["reference_stable"] = SafeStableRepresentation(reference, doc);
+                        }
+                        if (curveElement.GeometryCurve is Line line)
+                        {
+                            curveInfo["start"] = Point(line.GetEndPoint(0));
+                            curveInfo["end"] = Point(line.GetEndPoint(1));
+                            curveInfo["direction"] = Point(line.Direction);
+                            curveInfo["length_ft"] = line.Length;
+                        }
+                        curves.Add(curveInfo);
+                    }
+                    result["sketch_curves"] = curves;
+                    var planes = new JArray();
+                    foreach (var plane in new FilteredElementCollector(doc).OfClass(typeof(ReferencePlane)).Cast<ReferencePlane>())
+                    {
+                        var planeInfo = new JObject();
+                        planeInfo["id"] = RevitCompat.GetId(plane.Id);
+                        planeInfo["name"] = plane.Name;
+                        var p = plane.GetPlane();
+                        planeInfo["origin"] = Point(p.Origin);
+                        planeInfo["normal"] = Point(p.Normal);
+                        planeInfo["direction"] = Point(plane.Direction);
+                        var reference = plane.GetReference();
+                        if (reference != null)
+                        {
+                            planeInfo["reference_stable"] = SafeStableRepresentation(reference, doc);
+                        }
+                        planeInfo["geometry_faces"] = ReadFaces(doc, plane, null);
+                        planes.Add(planeInfo);
+                    }
+                    result["reference_planes"] = planes;
+                    var views = new JArray();
+                    foreach (var view in new FilteredElementCollector(doc).OfClass(typeof(ViewPlan)).Cast<ViewPlan>().Where(v => !v.IsTemplate))
+                    {
+                        views.Add(new JObject
+                        {
+                            ["id"] = RevitCompat.GetId(view.Id),
+                            ["name"] = view.Name,
+                            ["type"] = view.ViewType.ToString(),
+                            ["level_id"] = view.GenLevel != null ? RevitCompat.GetId(view.GenLevel.Id) : -1,
+                            ["level_elevation"] = view.GenLevel?.Elevation,
+                            ["faces_left_plane"] = ReadFaces(doc, FindPlane(doc, "RvtMcp Left"), view),
+                            ["faces_center_lr"] = ReadFaces(doc, FindPlane(doc, "Center (Left/Right)"), view)
                         });
                     }
-                    result["parameters"] = parameters;
-                }
-                var extrusion = extrusionIdValue.HasValue
-                    ? doc.GetElement(RevitCompat.ToElementId(extrusionIdValue.Value)) as Extrusion
-                    : new FilteredElementCollector(doc).OfClass(typeof(Extrusion)).Cast<Extrusion>().FirstOrDefault();
-                if (extrusion == null)
-                    return CommandResult.Fail("No Extrusion found in " + modelPath);
-                result["extrusion_id"] = RevitCompat.GetId(extrusion.Id);
-                result["extrusion_height"] = extrusion.get_Parameter(BuiltInParameter.EXTRUSION_END_PARAM)?.AsDouble();
-                var sketch = extrusion.Sketch;
-                if (sketch == null) return CommandResult.Fail("Extrusion has no Sketch.");
-                var sketchPlane = sketch.SketchPlane;
-                result["sketch_plane_id"] = sketchPlane != null ? RevitCompat.GetId(sketchPlane.Id) : -1;
-                if (sketchPlane != null)
-                {
-                    var plane = sketchPlane.GetPlane();
-                    result["sketch_plane_origin"] = Point(plane.Origin);
-                    result["sketch_plane_normal"] = Point(plane.Normal);
-                    result["sketch_plane_x"] = Point(plane.XVec);
-                    result["sketch_plane_y"] = Point(plane.YVec);
-                }
-                var curves = new JArray();
-                foreach (var id in sketch.GetAllElements())
-                {
-                    var curveElement = doc.GetElement(id) as ModelCurve;
-                    if (curveElement == null) continue;
-                    var curveInfo = new JObject();
-                    curveInfo["element_id"] = RevitCompat.GetId(curveElement.Id);
-                    curveInfo["geometry_curve_type"] = curveElement.GeometryCurve?.GetType().FullName;
-                    var reference = curveElement.GeometryCurve?.Reference;
-                    if (reference != null)
-                    {
-                        curveInfo["reference_element_id"] = reference.ElementId != null ? RevitCompat.GetId(reference.ElementId) : -1;
-                        curveInfo["reference_stable"] = SafeStableRepresentation(reference, doc);
-                    }
-                    if (curveElement.GeometryCurve is Line line)
-                    {
-                        curveInfo["start"] = Point(line.GetEndPoint(0));
-                        curveInfo["end"] = Point(line.GetEndPoint(1));
-                        curveInfo["direction"] = Point(line.Direction);
-                        curveInfo["length_ft"] = line.Length;
-                    }
-                    curves.Add(curveInfo);
-                }
-                result["sketch_curves"] = curves;
-                var planes = new JArray();
-                foreach (var plane in new FilteredElementCollector(doc).OfClass(typeof(ReferencePlane)).Cast<ReferencePlane>())
-                {
-                    var planeInfo = new JObject();
-                    planeInfo["id"] = RevitCompat.GetId(plane.Id);
-                    planeInfo["name"] = plane.Name;
-                    var p = plane.GetPlane();
-                    planeInfo["origin"] = Point(p.Origin);
-                    planeInfo["normal"] = Point(p.Normal);
-                    planeInfo["direction"] = Point(plane.Direction);
-                    var reference = plane.GetReference();
-                    if (reference != null)
-                    {
-                        planeInfo["reference_stable"] = SafeStableRepresentation(reference, doc);
-                    }
-                    planeInfo["geometry_faces"] = ReadFaces(doc, plane, null);
-                    planes.Add(planeInfo);
-                }
-                result["reference_planes"] = planes;
-                var views = new JArray();
-                foreach (var view in new FilteredElementCollector(doc).OfClass(typeof(ViewPlan)).Cast<ViewPlan>().Where(v => !v.IsTemplate))
-                {
-                    views.Add(new JObject
-                    {
-                        ["id"] = RevitCompat.GetId(view.Id),
-                        ["name"] = view.Name,
-                        ["type"] = view.ViewType.ToString(),
-                        ["level_id"] = view.GenLevel != null ? RevitCompat.GetId(view.GenLevel.Id) : -1,
-                        ["level_elevation"] = view.GenLevel?.Elevation,
-                        ["faces_left_plane"] = ReadFaces(doc, FindPlane(doc, "RvtMcp Left"), view),
-                        ["faces_center_lr"] = ReadFaces(doc, FindPlane(doc, "Center (Left/Right)"), view)
-                    });
-                }
-                result["view_plans"] = views;
+                    result["view_plans"] = views;
 
-                if (commitProbe)
-                {
-                    // Commit-probe mode: each attempt uses its own transaction, commits,
-                    // reads back geometry/references, then the doc is closed without saving.
-                    result["commit_probes"] = RunCommitProbes(doc, extrusion, modelPath);
-                }
-                else if (createReferencePlane || createDimension)
-                {
-                    using (var transaction = new Transaction(doc, "RvtMcp probe: create reference plane / dimension"))
+                    if (commitProbe)
                     {
-                        transaction.Start();
-                        try
+                        result["commit_probes"] = RunCommitProbes(doc, extrusion, modelPath);
+                    }
+                    else if (createReferencePlane || createDimension)
+                    {
+                        using (var transaction = new Transaction(doc, "RvtMcp probe: create reference plane / dimension"))
                         {
-                            var plan = FindZeroLevelFloorPlan(doc);
-                            if (plan == null) throw new InvalidOperationException("No zero-level floor plan.");
-                            doc.Regenerate();
-                            var attempts = new JArray();
-                            if (createReferencePlane || createDimension)
+                            transaction.Start();
+                            try
                             {
-                                EnsurePlane(doc, plan, "RvtMcp Left", new XYZ(-2, -2, 0), new XYZ(-2, 2, 0));
-                                EnsurePlane(doc, plan, "RvtMcp Right", new XYZ(2, -2, 0), new XYZ(2, 2, 0));
+                                var plan = FindZeroLevelFloorPlan(doc);
+                                if (plan == null) throw new InvalidOperationException("No zero-level floor plan.");
                                 doc.Regenerate();
+                                var attempts = new JArray();
+                                if (createReferencePlane || createDimension)
+                                {
+                                    EnsurePlane(doc, plan, "RvtMcp Left", new XYZ(-2, -2, 0), new XYZ(-2, 2, 0));
+                                    EnsurePlane(doc, plan, "RvtMcp Right", new XYZ(2, -2, 0), new XYZ(2, 2, 0));
+                                    doc.Regenerate();
+                                }
+                                if (createDimension)
+                                {
+                                    var left = FindPlane(doc, "RvtMcp Left");
+                                    var right = FindPlane(doc, "RvtMcp Right");
+                                    var center = FindPlane(doc, "Center (Left/Right)");
+                                    attempts.Add(TryDimension(doc, plan, left, right, new XYZ(-2, 0, 0), new XYZ(2, 0, 0), "two-reference length"));
+                                    attempts.Add(TryDimension(doc, plan, left, center, new XYZ(-2, 0, 0), new XYZ(0, 0, 0), "two-reference left-center"));
+                                    attempts.Add(TryDimension(doc, plan, center, right, new XYZ(0, 0, 0), new XYZ(2, 0, 0), "two-reference center-right"));
+                                    attempts.Add(TryThreeReferenceDimension(doc, plan, left, center, right));
+                                }
+                                result["dimension_attempts"] = attempts;
+                                transaction.RollBack();
                             }
-                            if (createDimension)
+                            catch
                             {
-                                var left = FindPlane(doc, "RvtMcp Left");
-                                var right = FindPlane(doc, "RvtMcp Right");
-                                var center = FindPlane(doc, "Center (Left/Right)");
-                                attempts.Add(TryDimension(doc, plan, left, right, new XYZ(-2, 0, 0), new XYZ(2, 0, 0), "two-reference length"));
-                                attempts.Add(TryDimension(doc, plan, left, center, new XYZ(-2, 0, 0), new XYZ(0, 0, 0), "two-reference left-center"));
-                                attempts.Add(TryDimension(doc, plan, center, right, new XYZ(0, 0, 0), new XYZ(2, 0, 0), "two-reference center-right"));
-                                attempts.Add(TryThreeReferenceDimension(doc, plan, left, center, right));
+                                if (transaction.GetStatus() == TransactionStatus.Started) transaction.RollBack();
+                                throw;
                             }
-                            result["dimension_attempts"] = attempts;
-                            transaction.RollBack(); // rollback mode: never persist probe geometry
-                        }
-                        catch
-                        {
-                            if (transaction.GetStatus() == TransactionStatus.Started) transaction.RollBack();
-                            throw;
                         }
                     }
+                    return CommandResult.Ok(result);
                 }
-                return CommandResult.Ok(result);
-            }
-            catch (Exception ex)
-            {
-                return CommandResult.Fail("Probe failed: " + ex);
-            }
-            finally
-            {
-                if (doc != null) doc.Close(false);
+                catch (Exception ex)
+                {
+                    return CommandResult.Fail("Probe failed: " + ex);
+                }
+                finally
+                {
+                    if (doc != null) McpDocument.Close(doc, false);
+                }
             }
         }
 
@@ -259,24 +260,30 @@ namespace RvtMcp.Plugin.Handlers
             // Probe 5: dimension directly on sketch ModelCurve references
             probes.Add(CommitProbeAttempt(doc, plan, "sketch-curve two-reference", (d, p) =>
             {
-                EnsurePlane(d, p, "RvtMcp Left", new XYZ(-2, -2, 0), new XYZ(-2, 2, 0));
-                EnsurePlane(d, p, "RvtMcp Right", new XYZ(2, -2, 0), new XYZ(2, 2, 0));
-                d.Regenerate();
                 var extr = new FilteredElementCollector(d).OfClass(typeof(Extrusion)).Cast<Extrusion>().FirstOrDefault();
                 if (extr?.Sketch == null) return new JObject { ["error"] = "No extrusion sketch" };
                 var modelCurves = extr.Sketch.GetAllElements()
                     .Select(id => d.GetElement(id) as ModelCurve)
                     .Where(mc => mc?.GeometryCurve is Line)
+                    .Select(mc => new { Curve = mc, Line = (Line)mc.GeometryCurve })
                     .ToList();
-                // Find left and right vertical lines
-                var leftCurve = modelCurves.FirstOrDefault(mc => Math.Abs(((Line)mc.GeometryCurve).GetEndPoint(0).X + 2) < 0.01);
-                var rightCurve = modelCurves.FirstOrDefault(mc => Math.Abs(((Line)mc.GeometryCurve).GetEndPoint(0).X - 2) < 0.01);
-                if (leftCurve?.GeometryCurve?.Reference == null || rightCurve?.GeometryCurve?.Reference == null)
+                // Find leftmost and rightmost vertical lines by X coordinate
+                var verticalLines = modelCurves
+                    .Where(mc => Math.Abs(mc.Line.Direction.Y) > 0.99) // vertical in plan
+                    .OrderBy(mc => mc.Line.GetEndPoint(0).X)
+                    .ToList();
+                if (verticalLines.Count < 2)
+                    return new JObject { ["error"] = "Fewer than 2 vertical sketch lines found" };
+                var leftCurve = verticalLines.First().Curve;
+                var rightCurve = verticalLines.Last().Curve;
+                if (leftCurve.GeometryCurve?.Reference == null || rightCurve.GeometryCurve?.Reference == null)
                     return new JObject { ["error"] = "Sketch curve references not available" };
+                var leftX = verticalLines.First().Line.GetEndPoint(0).X;
+                var rightX = verticalLines.Last().Line.GetEndPoint(0).X;
                 var refs = new ReferenceArray();
                 refs.Append(leftCurve.GeometryCurve.Reference);
                 refs.Append(rightCurve.GeometryCurve.Reference);
-                var dim = d.FamilyCreate.NewDimension(p, Line.CreateBound(new XYZ(-2, 0, 0), new XYZ(2, 0, 0)), refs);
+                var dim = d.FamilyCreate.NewDimension(p, Line.CreateBound(new XYZ(leftX, 0, 0), new XYZ(rightX, 0, 0)), refs);
                 var result = new JObject
                 {
                     ["created_id"] = RevitCompat.GetId(dim.Id),
@@ -285,6 +292,10 @@ namespace RvtMcp.Plugin.Handlers
                 TryLabelDimension(d, dim, "Length", result);
                 return result;
             }));
+
+            // Probe 6: planes + dimension + alignment lock + parameter flex test
+            probes.Add(CommitProbeAlignmentFlex(doc, plan, "alignment-lock two-ref", useEq: false));
+            probes.Add(CommitProbeAlignmentFlex(doc, plan, "alignment-lock EQ", useEq: true));
 
             return probes;
         }
@@ -301,12 +312,10 @@ namespace RvtMcp.Plugin.Handlers
                     var attemptResult = attemptFunc(doc, plan);
                     result["attempt"] = attemptResult;
 
-                    // Commit
                     var commitStatus = transaction.Commit();
                     result["commit_status"] = commitStatus.ToString();
 
-                    // Read back after commit
-                    doc.Regenerate();
+                    // Read back — no Regenerate outside transaction; read-only access is fine.
                     result["post_commit_extrusion_valid"] = new FilteredElementCollector(doc)
                         .OfClass(typeof(Extrusion)).Cast<Extrusion>().Any();
 
@@ -321,7 +330,6 @@ namespace RvtMcp.Plugin.Handlers
                         }
                     }
 
-                    // Check dimensions
                     var dims = new FilteredElementCollector(doc).OfClass(typeof(Dimension)).Cast<Dimension>().ToList();
                     var dimInfos = new JArray();
                     foreach (var dim in dims)
@@ -348,6 +356,198 @@ namespace RvtMcp.Plugin.Handlers
             }
             return result;
         }
+
+        // ── Probe 6: full pipeline with alignment lock + flex ──
+
+        private static JObject CommitProbeAlignmentFlex(Document doc, ViewPlan plan, string label, bool useEq)
+        {
+            var result = new JObject { ["probe"] = label };
+            var manager = doc.FamilyManager;
+            if (manager == null) { result["error"] = "No FamilyManager"; return result; }
+
+            // Step 1: commit planes + dimension + alignment
+            using (var transaction = new Transaction(doc, "RvtMcp alignment-probe: " + label))
+            {
+                transaction.Start();
+                try
+                {
+                    EnsurePlane(doc, plan, "RvtMcp Left", new XYZ(-2, -2, 0), new XYZ(-2, 2, 0));
+                    EnsurePlane(doc, plan, "RvtMcp Right", new XYZ(2, -2, 0), new XYZ(2, 2, 0));
+                    doc.Regenerate();
+
+                    var left = FindPlane(doc, "RvtMcp Left");
+                    var right = FindPlane(doc, "RvtMcp Right");
+                    var center = FindPlane(doc, "Center (Left/Right)");
+
+                    // Create dimension
+                    Dimension dim;
+                    if (useEq)
+                    {
+                        var refs = new ReferenceArray();
+                        refs.Append(left.GetReference());
+                        refs.Append(center.GetReference());
+                        refs.Append(right.GetReference());
+                        dim = doc.FamilyCreate.NewDimension(plan, Line.CreateBound(new XYZ(-2, 0, 0), new XYZ(2, 0, 0)), refs);
+                        dim.AreSegmentsEqual = true;
+                    }
+                    else
+                    {
+                        var refs = new ReferenceArray();
+                        refs.Append(left.GetReference());
+                        refs.Append(right.GetReference());
+                        dim = doc.FamilyCreate.NewDimension(plan, Line.CreateBound(new XYZ(-2, 0, 0), new XYZ(2, 0, 0)), refs);
+                    }
+                    result["dimension_id"] = RevitCompat.GetId(dim.Id);
+                    TryLabelDimension(doc, dim, "Length", result);
+
+                    // Alignment lock: align sketch lines to reference planes
+                    var extr = new FilteredElementCollector(doc).OfClass(typeof(Extrusion)).Cast<Extrusion>().FirstOrDefault();
+                    if (extr?.Sketch == null) throw new InvalidOperationException("No extrusion sketch for alignment");
+
+                    var sketchCurves = extr.Sketch.GetAllElements()
+                        .Select(id => doc.GetElement(id) as ModelCurve)
+                        .Where(mc => mc?.GeometryCurve is Line)
+                        .Select(mc => new { Curve = mc, Line = (Line)mc.GeometryCurve })
+                        .ToList();
+
+                    var verticalLines = sketchCurves
+                        .Where(mc => Math.Abs(mc.Line.Direction.Y) > 0.99)
+                        .OrderBy(mc => mc.Line.GetEndPoint(0).X)
+                        .ToList();
+                    var horizontalLines = sketchCurves
+                        .Where(mc => Math.Abs(mc.Line.Direction.X) > 0.99)
+                        .OrderBy(mc => mc.Line.GetEndPoint(0).Y)
+                        .ToList();
+
+                    if (verticalLines.Count < 2) throw new InvalidOperationException("Fewer than 2 vertical sketch lines");
+                    if (horizontalLines.Count < 2) throw new InvalidOperationException("Fewer than 2 horizontal sketch lines");
+
+                    // Align left vertical sketch line to left plane
+                    var leftSketchLine = verticalLines.First();
+                    var rightSketchLine = verticalLines.Last();
+
+                    doc.Regenerate();
+                    var leftView = FindZeroLevelFloorPlan(doc);
+                    var alignResult = new JArray();
+
+                    // Try NewAlignment: sketch curve → reference plane
+                    try
+                    {
+                        var alignment = doc.FamilyCreate.NewAlignment(
+                            leftView,
+                            leftSketchLine.Curve.GeometryCurve.Reference,
+                            left.GetReference());
+                        TrySetLocked(alignment, alignResult, "left");
+                    }
+                    catch (Exception ex)
+                    {
+                        alignResult.Add(new JObject { ["side"] = "left", ["error"] = ex.Message });
+                    }
+
+                    doc.Regenerate();
+
+                    try
+                    {
+                        var alignment = doc.FamilyCreate.NewAlignment(
+                            leftView,
+                            rightSketchLine.Curve.GeometryCurve.Reference,
+                            right.GetReference());
+                        TrySetLocked(alignment, alignResult, "right");
+                    }
+                    catch (Exception ex)
+                    {
+                        alignResult.Add(new JObject { ["side"] = "right", ["error"] = ex.Message });
+                    }
+
+                    result["alignments"] = alignResult;
+                    doc.Regenerate();
+
+                    var commitStatus = transaction.Commit();
+                    result["commit_status"] = commitStatus.ToString();
+
+                    // Read back after commit (no Regenerate outside transaction)
+                    var postExtr = new FilteredElementCollector(doc).OfClass(typeof(Extrusion)).Cast<Extrusion>().FirstOrDefault();
+                    if (postExtr != null)
+                    {
+                        var bbox = postExtr.get_BoundingBox(null);
+                        if (bbox != null)
+                        {
+                            result["post_commit_bbox_min"] = Point(bbox.Min);
+                            result["post_commit_bbox_max"] = Point(bbox.Max);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    result["commit_error"] = ex.Message;
+                    result["commit_error_type"] = ex.GetType().FullName;
+                    if (transaction.GetStatus() == TransactionStatus.Started)
+                        transaction.RollBack();
+                    return result; // Cannot flex if commit failed
+                }
+            }
+
+            // Step 2: flex test — change Length parameter and see if geometry follows
+            var lengthParam = manager.GetParameters()
+                .FirstOrDefault(p => string.Equals(p.Definition.Name, "Length", StringComparison.OrdinalIgnoreCase));
+            if (lengthParam == null) { result["flex_error"] = "Length parameter not found"; return result; }
+
+            var originalLengthValue = manager.CurrentType.AsDouble(lengthParam);
+            if (originalLengthValue == null) { result["flex_error"] = "Length parameter value is null"; return result; }
+            var originalLength = originalLengthValue.Value;
+            result["original_length_ft"] = originalLength;
+
+            using (var flexTransaction = new Transaction(doc, "RvtMcp flex: " + label))
+            {
+                flexTransaction.Start();
+                try
+                {
+                    var newLength = originalLength * 0.75; // shrink to 75%
+                    manager.Set(lengthParam, newLength);
+                    doc.Regenerate();
+
+                    var flexExtr = new FilteredElementCollector(doc).OfClass(typeof(Extrusion)).Cast<Extrusion>().FirstOrDefault();
+                    if (flexExtr != null)
+                    {
+                        var bbox = flexExtr.get_BoundingBox(null);
+                        if (bbox != null)
+                        {
+                            result["flex_bbox_min"] = Point(bbox.Min);
+                            result["flex_bbox_max"] = Point(bbox.Max);
+                        }
+                    }
+                    result["flex_new_length_ft"] = newLength;
+
+                    // Check sketch curve endpoints
+                    if (flexExtr?.Sketch != null)
+                    {
+                        var flexCurves = new JArray();
+                        foreach (var id in flexExtr.Sketch.GetAllElements())
+                        {
+                            var mc = doc.GetElement(id) as ModelCurve;
+                            if (mc?.GeometryCurve is Line line)
+                                flexCurves.Add(new JObject { ["start"] = Point(line.GetEndPoint(0)), ["end"] = Point(line.GetEndPoint(1)) });
+                        }
+                        result["flex_sketch_curves"] = flexCurves;
+                    }
+
+                    // Restore original
+                    manager.Set(lengthParam, originalLength);
+                    doc.Regenerate();
+                    flexTransaction.Commit(); // commit the restore; we discard anyway on Close(false)
+                }
+                catch (Exception ex)
+                {
+                    result["flex_error"] = ex.Message;
+                    if (flexTransaction.GetStatus() == TransactionStatus.Started)
+                        flexTransaction.RollBack();
+                }
+            }
+
+            return result;
+        }
+
+        // ── Dimension creation helpers ──
 
         private static JObject CreateDimensionAndLabel(Document doc, ViewPlan plan,
             ReferencePlane first, ReferencePlane second, XYZ start, XYZ end, string paramName)
@@ -392,8 +592,30 @@ namespace RvtMcp.Plugin.Handlers
             return result;
         }
 
-        private static void TryLabelDimension(Document doc, Dimension dimension, string paramName, JObject result)
+        private static void TrySetLocked(Dimension dimension, JArray alignResult, string side)
         {
+            try
+            {
+                // Dimension.Locked is available on Alignment (subclass) but the compile-time type
+                // is Dimension in some Revit API versions. Use reflection to set it safely.
+                var lockedProp = dimension.GetType().GetProperty("Locked");
+                if (lockedProp != null && lockedProp.CanWrite)
+                {
+                    lockedProp.SetValue(dimension, true);
+                    alignResult.Add(new JObject { ["side"] = side, ["locked"] = true });
+                }
+                else
+                {
+                    alignResult.Add(new JObject { ["side"] = side, ["error"] = "Locked property not available on " + dimension.GetType().Name });
+                }
+            }
+            catch (Exception ex)
+            {
+                alignResult.Add(new JObject { ["side"] = side, ["error"] = ex.Message });
+            }
+        }
+
+        private static void TryLabelDimension(Document doc, Dimension dimension, string paramName, JObject result)        {
             try
             {
                 var param = doc.FamilyManager.GetParameters()

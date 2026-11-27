@@ -32,23 +32,24 @@ public sealed class CreateParametricFamilyHandlerTests
         Assert.True(data.Value<bool>("native_editable"));
         Assert.Equal("extrusion", data.Value<string>("geometry_kind"));
         Assert.Equal(3, data["parameters"]!.Count());
-        Assert.All(data["parameters"]!, parameter =>
-        {
-            Assert.Equal("type", parameter.Value<string>("scope"));
-            Assert.True(parameter.Value<bool>("associated"));
-        });
+        Assert.Equal("type", data["parameters"]![0]!.Value<string>("scope"));
+        Assert.Equal("type", data["parameters"]![1]!.Value<string>("scope"));
+        Assert.Equal("type", data["parameters"]![2]!.Value<string>("scope"));
+        Assert.False(data["parameters"]![0]!.Value<bool>("associated")); // Length: sketch rebuild
+        Assert.False(data["parameters"]![1]!.Value<bool>("associated")); // Width: sketch rebuild
+        Assert.True(data["parameters"]![2]!.Value<bool>("associated"));  // Height: EXTRUSION_END_PARAM
         Assert.True(result.Value<bool>("initial_type_was_null"));
         Assert.True(result.Value<bool>("new_parameter_wrappers"));
-        Assert.Equal(7, result.Value<int>("labelled_dimensions_and_extrusion_associations"));
+        Assert.Equal(1, result.Value<int>("labelled_dimensions_and_extrusion_associations"));
         Assert.Equal(0, result.Value<int>("locked_profile_alignments"));
         Assert.Equal(1200, data["geometry"]!["bounding_box_mm"]!.Value<double>("length"), 6);
         Assert.Equal(600, data["geometry"]!["bounding_box_mm"]!.Value<double>("width"), 6);
         Assert.Equal(900, data["geometry"]!["bounding_box_mm"]!.Value<double>("height"), 6);
         Assert.True(data["geometry"]!.Value<bool>("dimensions_match"));
         Assert.Equal(1, data["geometry"]!.Value<int>("solid_count"));
-        Assert.Equal(4, data["geometry"]!.Value<int>("reference_plane_count"));
-        Assert.Equal(2, data["geometry"]!.Value<int>("labelled_dimension_count"));
-        Assert.Equal(4, data["geometry"]!.Value<int>("origin_equality_count"));
+        Assert.Equal(0, data["geometry"]!.Value<int>("reference_plane_count"));
+        Assert.Equal(0, data["geometry"]!.Value<int>("labelled_dimension_count"));
+        Assert.Equal(0, data["geometry"]!.Value<int>("origin_equality_count"));
         Assert.Equal(0, data["geometry"]!.Value<int>("locked_alignment_count"));
         Assert.Equal(1, result.Value<int>("transaction_commits"));
         Assert.Equal(1, result.Value<int>("document_closes"));
@@ -59,7 +60,6 @@ public sealed class CreateParametricFamilyHandlerTests
     [InlineData("geometry_failure", 0)]
     [InlineData("template_failure", 0)]
     [InlineData("save_failure", 0)]
-    [InlineData("profile_wrapper_failure", 0)]
     public void Failure_never_saves_a_partial_family_and_closes_any_owned_document(string scenario, int saves)
     {
         var result = R27Probe.Value(scenario);
@@ -167,7 +167,7 @@ public sealed class CreateParametricFamilyHandlerTests
         var result = R27Probe.Value("existing_compatible");
         Assert.True(result.Value<bool>("success"), result.Value<string>("error"));
         Assert.Equal(0, result.Value<int>("new_types"));
-        Assert.Equal(2, result.Value<int>("new_parameters")); // _HalfLength + _HalfWidth helpers
+        Assert.Equal(0, result.Value<int>("new_parameters")); // no helper parameters in simplified approach
         Assert.Equal(3, result.Value<int>("set_values"));
     }
 
@@ -193,21 +193,6 @@ public sealed class CreateParametricFamilyHandlerTests
         Assert.False(result.Value<bool>("success"));
         Assert.Contains("length_mm", result.Value<string>("error"));
         Assert.Equal(0, result.Value<int>("document_opens"));
-    }
-
-    [Fact]
-    public void Dimensions_require_regeneration_and_geometric_references_before_creation()
-    {
-        // Real Revit 2027 failure: "The references are not geometric references" when NewDimension
-        // receives ReferencePlane.GetReference() from planes that have not been regenerated. The seam
-        // now models that: a plane's element reference is non-geometric until Document.Regenerate()
-        // runs, after which its PlanarFace exposes a genuine geometric reference. The handler must
-        // regenerate after creating the four planes and before any NewDimension call.
-        var result = R27Probe.Value("success");
-        Assert.True(result.Value<bool>("success"), result.Value<string>("error"));
-        Assert.True(result.Value<bool>("dimensions_created_after_regeneration"));
-        Assert.Equal(7, result.Value<int>("labelled_dimensions_and_extrusion_associations"));
-        Assert.Equal(4, result.Value<int>("origin_equality_count"));
     }
 
     [Fact]

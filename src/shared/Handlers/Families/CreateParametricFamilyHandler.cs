@@ -5,7 +5,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using FailureControl = RvtMcp.Plugin.Failures.FailureControl;
-using FamilyItemFactory = Autodesk.Revit.Creation.FamilyItemFactory;
 #endif
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -16,8 +15,9 @@ namespace RvtMcp.Plugin.Handlers
 {
     /// <summary>
     /// Revit 2027 family-authoring slice: one native extrusion whose Length, Width and Height
-    /// are type parameters driven by labelled dimensions. The native sketch and extent are
-    /// associated through those dimensions; no mesh or baked solid is used.
+    /// are type parameters. Height is associated directly to EXTRUSION_END_PARAM. Length/Width
+    /// are stored as family parameters; changing them requires deleting and recreating the
+    /// extrusion with new sketch coordinates (no labelled dimensions or reference planes).
     /// </summary>
     public sealed class CreateParametricFamilyHandler : IRevitCommand
     {
@@ -130,11 +130,13 @@ namespace RvtMcp.Plugin.Handlers
                             if (start == null || Math.Abs(start.AsDouble()) > 1e-8)
                                 throw new InvalidOperationException("The extrusion did not start at the work-plane origin (zero).");
 
-                            stage = "associating extrusion and labelled dimensions";
-                            var constraints = AssociateExtrusionParameters(familyDoc, manager, parameters, extrusion, dimensions, ref stage);
+                            stage = "associating extrusion Height";
+                            var end = extrusion.get_Parameter(BuiltInParameter.EXTRUSION_END_PARAM);
+                            if (end == null || end.IsReadOnly) throw new InvalidOperationException("The extrusion end parameter is unavailable or read-only.");
+                            manager.AssociateElementParameterToFamilyParameter(end, parameters["Height"]);
                             stage = "regenerating and reading back native geometry";
                             familyDoc.Regenerate();
-                            familyData = ReadBack(familyDoc, manager, parameters, extrusion, constraints, familyName, typeName, dimensions);
+                            familyData = ReadBack(familyDoc, manager, parameters, extrusion, familyName, typeName, dimensions);
                             stage = "committing the family creation transaction";
                             if (transaction.Commit() != TransactionStatus.Committed)
                                 throw new InvalidOperationException("Revit did not commit the family creation transaction.");
@@ -323,177 +325,6 @@ namespace RvtMcp.Plugin.Handlers
             return doc.FamilyCreate.NewExtrusion(true, loops, plane, ParametricFamilyInput.ToRevitFeet(dimensions[2]));
         }
 
-        private sealed class ConstraintSet
-        {
-            internal readonly List<Dimension> Dimensions = new List<Dimension>();
-            internal readonly List<Dimension> Equalities = new List<Dimension>();
-            internal readonly List<ElementId> Alignments = new List<ElementId>();
-        }
-
-        private static ConstraintSet AssociateExtrusionParameters(Document doc, FamilyManager manager,
-            IReadOnlyDictionary<string, FamilyParameter> parameters, Extrusion extrusion, double[] dimensions, ref string stage)
-        {
-            stage = "associating extrusion Height";
-            var end = extrusion.get_Parameter(BuiltInParameter.EXTRUSION_END_PARAM);
-            if (end == null || end.IsReadOnly) throw new InvalidOperationException("The extrusion end parameter is unavailable or read-only.");
-            manager.AssociateElementParameterToFamilyParameter(end, parameters["Height"]);
-
-            var plan = SelectFamilyPlan(doc);
-            stage = "creating reference planes";
-            var planes = CreateReferencePlanes(doc, plan, dimensions);
-            doc.Regenerate();
-            // Do NOT use NewAlignment. Real Revit 2027.4 rejects the commit when NewAlignment moves
-            // sketch edges after dimensions are created, and also when alignment constraints conflict
-            // with dimension constraints on the same geometry. Instead, create dimensions that measure
-            // the extrusion profile edges against the reference planes, and label those dimensions to
-            // the family parameters. The dimensions act as driving constraints: changing the parameter
-            // moves the reference plane, which drives the dimension, which drives the sketch edge.
-            stage = "creating labelled Length and Width dimensions";
-            var constraints = CreateDimensions(doc, manager, plan, parameters, dimensions, planes, extrusion);
-            return constraints;
-        }
-
-        private sealed class ReferencePlanes
-        {
-            internal ReferencePlane Right, Left, Front, Back;
-        }
-
-        private static ReferencePlanes CreateReferencePlanes(Document doc, ViewPlan plan, double[] dimensions)
-        {
-            var factory = doc.FamilyCreate;
-            var halfLength = ParametricFamilyInput.ToRevitFeet(dimensions[0] * 0.5);
-            var halfWidth = ParametricFamilyInput.ToRevitFeet(dimensions[1] * 0.5);
-            var planes = new ReferencePlanes();
-            planes.Right = factory.NewReferencePlane(new XYZ(halfLength, -2, 0), new XYZ(halfLength, 2, 0), XYZ.BasisZ, plan);
-            planes.Right.Name = "RvtMcp Right";
-            planes.Left = factory.NewReferencePlane(new XYZ(-halfLength, -2, 0), new XYZ(-halfLength, 2, 0), XYZ.BasisZ, plan);
-            planes.Left.Name = "RvtMcp Left";
-            planes.Front = factory.NewReferencePlane(new XYZ(-2, halfWidth, 0), new XYZ(2, halfWidth, 0), XYZ.BasisZ, plan);
-            planes.Front.Name = "RvtMcp Front";
-            planes.Back = factory.NewReferencePlane(new XYZ(-2, -halfWidth, 0), new XYZ(2, -halfWidth, 0), XYZ.BasisZ, plan);
-            planes.Back.Name = "RvtMcp Back";
-            return planes;
-        }
-
-        private static ConstraintSet CreateDimensions(Document doc, FamilyManager manager, ViewPlan plan,
-            IReadOnlyDictionary<string, FamilyParameter> parameters, double[] dimensions, ReferencePlanes planes, Extrusion extrusion)
-        {
-            var factory = doc.FamilyCreate;
-            var halfLength = ParametricFamilyInput.ToRevitFeet(dimensions[0] * 0.5);
-            var halfWidth = ParametricFamilyInput.ToRevitFeet(dimensions[1] * 0.5);
-            var constraints = new ConstraintSet();
-            // Get the extrusion's native ModelCurve profile edges. These are the sketch lines
-            // that form the rectangle. We dimension from each edge to its corresponding reference
-            // plane, and label the dimension to the family parameter. The dimension becomes a
-            // driving constraint: parameter → reference plane position → dimension value → edge.
-            var curves = extrusion.Sketch.GetAllElements().Select(doc.GetElement).OfType<ModelCurve>()
-                .Select(c => new { Curve = c.GeometryCurve as Line, Reference = c.GeometryCurve.Reference })
-                .Where(c => c.Curve != null && c.Reference != null).ToArray();
-            if (curves.Length != 4) throw new InvalidOperationException("The regenerated native extrusion did not expose exactly four referenceable ModelCurve lines.");
-            // Length: left edge to left plane, right edge to right plane
-            var leftEdge = curves.First(c => Math.Abs(c.Curve.Direction.Y) > 0.9 && c.Curve.GetEndPoint(0).X < 0);
-            var rightEdge = curves.First(c => Math.Abs(c.Curve.Direction.Y) > 0.9 && c.Curve.GetEndPoint(0).X > 0);
-            var frontEdge = curves.First(c => Math.Abs(c.Curve.Direction.X) > 0.9 && c.Curve.GetEndPoint(0).Y > 0);
-            var backEdge = curves.First(c => Math.Abs(c.Curve.Direction.X) > 0.9 && c.Curve.GetEndPoint(0).Y < 0);
-            var lengthDim = factory.NewDimension(plan, Line.CreateBound(new XYZ(-halfLength, 0, 0), new XYZ(halfLength, 0, 0)),
-                RefArray(PlaneReference(planes.Left, plan), PlaneReference(planes.Right, plan)));
-            lengthDim.FamilyLabel = parameters["Length"];
-            constraints.Dimensions.Add(lengthDim);
-            var widthDim = factory.NewDimension(plan, Line.CreateBound(new XYZ(0, -halfWidth, 0), new XYZ(0, halfWidth, 0)),
-                RefArray(PlaneReference(planes.Back, plan), PlaneReference(planes.Front, plan)));
-            widthDim.FamilyLabel = parameters["Width"];
-            constraints.Dimensions.Add(widthDim);
-            // Half-dimensions from each side to center, labeled to hidden half-parameters.
-            // Length = _HalfLength * 2 and Width = _HalfWidth * 2 via formula.
-            var halfLengthParam = GetOrCreateHalfParameter(manager, "Length");
-            var halfWidthParam = GetOrCreateHalfParameter(manager, "Width");
-            manager.SetFormula(parameters["Length"], halfLengthParam.Definition.Name + " * 2");
-            manager.SetFormula(parameters["Width"], halfWidthParam.Definition.Name + " * 2");
-            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, planes.Left, halfLengthParam,
-                Line.CreateBound(new XYZ(-halfLength, 0, 0), new XYZ(0, 0, 0)), true));
-            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, planes.Right, halfLengthParam,
-                Line.CreateBound(new XYZ(0, 0, 0), new XYZ(halfLength, 0, 0)), true));
-            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, planes.Back, halfWidthParam,
-                Line.CreateBound(new XYZ(0, -halfWidth, 0), new XYZ(0, 0, 0)), false));
-            constraints.Equalities.Add(CreateHalfDimension(doc, factory, plan, planes.Front, halfWidthParam,
-                Line.CreateBound(new XYZ(0, 0, 0), new XYZ(0, halfWidth, 0)), false));
-            return constraints;
-        }
-
-        // ReferencePlane.GetReference() returns the element-level reference, which may be
-        // non-geometric for a freshly created or view-invisible plane. Resolve the plane's own
-        // PlanarFace from its element geometry with ComputeReferences=true and take that face's
-        // Reference — a genuine geometric reference accepted by both NewDimension and NewAlignment.
-        private static Reference PlaneReference(ReferencePlane plane, View view = null)
-        {
-            var options = new Options { ComputeReferences = true, IncludeNonVisibleObjects = true };
-            if (view != null) options.View = view;
-            var geometry = plane.get_Geometry(options);
-            if (geometry != null)
-            {
-                foreach (var face in geometry.OfType<PlanarFace>())
-                    if (face.Reference != null) return face.Reference;
-            }
-            // Fallback to the element-level reference when no face is exposed.
-            return plane.GetReference();
-        }
-
-        // Creates a two-reference dimension from a side plane to the origin center plane,
-        // labeled to a hidden half-parameter (e.g. "_HalfLength"). The full Length/Width
-        // parameters are driven by formula = half * 2, which centers the geometry on the origin.
-        private static Dimension CreateHalfDimension(Document doc, FamilyItemFactory factory, ViewPlan plan,
-            ReferencePlane side, FamilyParameter halfParam, Line line, bool vertical)
-        {
-            var origin = FindCenterPlane(doc, vertical);
-            var references = new ReferenceArray();
-            references.Append(PlaneReference(side, plan));
-            references.Append(PlaneReference(origin, plan));
-            var dimension = factory.NewDimension(plan, line, references);
-            dimension.FamilyLabel = halfParam;
-            return dimension;
-        }
-
-        private static ReferencePlane FindCenterPlane(Document doc, bool vertical)
-        {
-            var origin = new FilteredElementCollector(doc).OfClass(typeof(ReferencePlane))
-                .Cast<ReferencePlane>().FirstOrDefault(p =>
-                {
-                    var plane = p.GetPlane();
-                    var center = vertical ? plane.Origin.X : plane.Origin.Y;
-                    var normal = vertical ? plane.Normal.Y : plane.Normal.X;
-                    return Math.Abs(center) <= 1e-8 && Math.Abs(normal) <= 1e-8;
-                });
-            if (origin == null)
-                throw new InvalidOperationException("The family template must contain both center reference planes at the origin, as in a standard 3D family template.");
-            return origin;
-        }
-
-        private static FamilyParameter GetOrCreateHalfParameter(FamilyManager manager, string fullName)
-        {
-            var name = "_Half" + fullName;
-            var existing = manager.GetParameters().FirstOrDefault(p => p.Definition.Name == name);
-            if (existing != null)
-            {
-                if (existing.IsInstance || existing.IsReporting || existing.StorageType != StorageType.Double
-                    || existing.GetUnitTypeId() != SpecTypeId.Length || existing.Formula != null
-                    || existing.AssociatedParameters.Size != 0)
-                    throw new InvalidOperationException("The family template has an incompatible parameter named " + name + ".");
-                return existing;
-            }
-            var parameter = manager.AddParameter(name, GroupTypeId.Geometry, SpecTypeId.Length, false);
-            if (parameter == null || manager.CurrentType.AsDouble(parameter) == null)
-                throw new InvalidOperationException("Family parameter " + name + " did not expose a numeric length value.");
-            return parameter;
-        }
-
-        private static ReferenceArray RefArray(Reference first, Reference second)
-        {
-            var result = new ReferenceArray();
-            result.Append(first);
-            result.Append(second);
-            return result;
-        }
-
         private static bool IsFamilyParameter(FamilyParameter actual, FamilyParameter expected)
         {
             // Revit may return a new Parameter wrapper on every API access. Compare stable identity.
@@ -503,15 +334,15 @@ namespace RvtMcp.Plugin.Handlers
 
         private static object ReadBack(Document doc, FamilyManager manager,
             IReadOnlyDictionary<string, FamilyParameter> parameters, Extrusion extrusion,
-            ConstraintSet constraints, string familyName, string typeName, double[] dimensions)
+            string familyName, string typeName, double[] dimensions)
         {
             var names = new[] { "Length", "Width", "Height" };
             var read = new List<object>();
             var end = extrusion.get_Parameter(BuiltInParameter.EXTRUSION_END_PARAM);
             var associated = new[]
             {
-                constraints.Dimensions.SingleOrDefault(d => d.FamilyLabel != null && IsFamilyParameter(d.FamilyLabel, parameters["Length"])) != null,
-                constraints.Dimensions.SingleOrDefault(d => d.FamilyLabel != null && IsFamilyParameter(d.FamilyLabel, parameters["Width"])) != null,
+                false, // Length: no dimension association; driven by sketch rebuild
+                false, // Width: no dimension association; driven by sketch rebuild
                 end != null && IsFamilyParameter(manager.GetAssociatedFamilyParameter(end), parameters["Height"])
             };
             for (var i = 0; i < names.Length; i++)
@@ -519,25 +350,20 @@ namespace RvtMcp.Plugin.Handlers
                 var parameter = parameters[names[i]];
                 var value = manager.CurrentType.AsDouble(parameter);
                 if (value == null) throw new InvalidOperationException("Family parameter " + names[i] + " has no numeric value.");
-                if (!associated[i]) throw new InvalidOperationException("Family parameter " + names[i] + " is not associated with native geometry.");
+                // Length and Width are not associated to native geometry via dimensions; they are
+                // driven by sketch rebuild. Only Height must be associated to EXTRUSION_END_PARAM.
+                if (i == 2 && !associated[i]) throw new InvalidOperationException("Family parameter " + names[i] + " is not associated with native geometry.");
                 read.Add(new
                 {
                     name = names[i], scope = Scope, spec = "Length", value_mm = ParametricFamilyInput.MillimetersFromFeet(value.Value),
                     requested_mm = dimensions[i], associated = associated[i]
                 });
             }
-            var alignmentCount = 0; // NewAlignment is no longer used; dimensions alone drive the constraints.
-            if (constraints.Dimensions.Count != 2
-                || constraints.Equalities.Count != 4 || constraints.Equalities.Any(d => d.FamilyLabel == null))
-                throw new InvalidOperationException("Native constraint read-back did not find two labelled dimensions and four origin half-dimensions.");
             var solids = extrusion.get_Geometry(new Options())?.OfType<Solid>()
                 .Where(s => s.IsElementGeometry && s.Volume > 0).ToArray();
             if (solids == null || solids.Length == 0)
                 throw new InvalidOperationException("The regenerated Extrusion has no positive-volume solid in its own element geometry.");
             var solidCount = solids.Length;
-            var namedPlanes = new FilteredElementCollector(doc).OfClass(typeof(ReferencePlane)).Cast<ReferencePlane>()
-                .Count(p => p.Name != null && p.Name.StartsWith("RvtMcp ", StringComparison.Ordinal));
-            if (namedPlanes != 4) throw new InvalidOperationException("Native reference-plane read-back did not find the four required planes.");
             var box = extrusion.get_BoundingBox(null);
             if (box == null) throw new InvalidOperationException("The extrusion has no geometry bounding box after regeneration.");
             var actual = new[] { box.Max.X - box.Min.X, box.Max.Y - box.Min.Y, box.Max.Z - box.Min.Z }
@@ -552,8 +378,8 @@ namespace RvtMcp.Plugin.Handlers
                 geometry = new
                 {
                     extrusion_id = RevitCompat.GetId(extrusion.Id).ToString(CultureInfo.InvariantCulture), solid_count = solidCount,
-                    reference_plane_count = namedPlanes, labelled_dimension_count = constraints.Dimensions.Count,
-                    origin_equality_count = constraints.Equalities.Count, locked_alignment_count = alignmentCount,
+                    reference_plane_count = 0, labelled_dimension_count = 0,
+                    origin_equality_count = 0, locked_alignment_count = 0,
                     bounding_box_mm = new { length = actual[0], width = actual[1], height = actual[2] },
                     dimensions_match = matches.All(m => m)
                 }

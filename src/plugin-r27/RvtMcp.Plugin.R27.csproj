@@ -51,8 +51,9 @@
     <MakeDir Directories="$(DeployDir)" />
     <Error Condition="'@(DeployNativeSqlite)' == ''" Text="Native SQLite is missing; rebuild before deploying." />
     <Copy SourceFiles="@(DeployFiles)" DestinationFolder="$(DeployDir)" SkipUnchangedFiles="true" />
-    <Copy SourceFiles="@(DeployNativeSqlite)" DestinationFolder="$(DeployDir)" SkipUnchangedFiles="true" />
-    <Exec Command="if exist &quot;$(OutputPath)runtimes&quot; xcopy /Y /Q /S /E /I &quot;$(OutputPath)runtimes&quot; &quot;$(DeployDir)runtimes&quot;" IgnoreExitCode="true" />
+    <!-- Match stage-plugin-zip.ps1: Revit needs the root copy, while .NET probes the RID path. -->
+    <Copy SourceFiles="@(DeployNativeSqlite)" DestinationFiles="$(DeployDir)e_sqlite3.dll" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(DeployNativeSqlite)" DestinationFolder="$(DeployDir)runtimes\win-x64\native\" SkipUnchangedFiles="true" />
     <Copy SourceFiles="RvtMcp.R27.addin" DestinationFolder="$(APPDATA)\Autodesk\Revit\Addins\2027\" SkipUnchangedFiles="true" />
   </Target>
 </Project>

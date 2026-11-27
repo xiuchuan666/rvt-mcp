@@ -367,10 +367,10 @@ namespace RvtMcp.Plugin.Handlers
             // the references from the resolved geometry rather than from the just-created wrappers.
             doc.Regenerate();
             var dimension = factory.NewDimension(plan, Line.CreateBound(new XYZ(-halfLength, 0, 0), new XYZ(halfLength, 0, 0)),
-                RefArray(PlaneReference(left), PlaneReference(right)));
+                RefArray(PlaneReference(left, plan), PlaneReference(right, plan)));
             dimension.FamilyLabel = parameters["Length"];
             var width = factory.NewDimension(plan, Line.CreateBound(new XYZ(0, -halfWidth, 0), new XYZ(0, halfWidth, 0)),
-                RefArray(PlaneReference(back), PlaneReference(front)));
+                RefArray(PlaneReference(back, plan), PlaneReference(front, plan)));
             width.FamilyLabel = parameters["Width"];
             var constraints = new ConstraintSet();
             constraints.Dimensions.Add(dimension);
@@ -382,20 +382,21 @@ namespace RvtMcp.Plugin.Handlers
             return constraints;
         }
 
-        // ReferencePlane.GetReference() is documented as the plane's geometry reference, but on a
-        // freshly created (not yet regenerated) plane it can yield a non-geometric reference that
-        // NewDimension rejects. Resolve the plane's own PlanarFace from its element geometry after
-        // regeneration and take that face's Reference, which is a genuine geometric reference and
-        // is also accepted by NewAlignment ("planar face and reference plane" / "2 planar faces").
-        private static Reference PlaneReference(ReferencePlane plane)
+        // ReferencePlane.GetReference() returns the element-level reference, which may be
+        // non-geometric for a freshly created or view-invisible plane. Resolve the plane's own
+        // PlanarFace from its element geometry with ComputeReferences=true and take that face's
+        // Reference — a genuine geometric reference accepted by both NewDimension and NewAlignment.
+        private static Reference PlaneReference(ReferencePlane plane, View view = null)
         {
-            var geometry = plane.get_Geometry(new Options());
+            var options = new Options { ComputeReferences = true, IncludeNonVisibleObjects = true };
+            if (view != null) options.View = view;
+            var geometry = plane.get_Geometry(options);
             if (geometry != null)
             {
                 foreach (var face in geometry.OfType<PlanarFace>())
                     if (face.Reference != null) return face.Reference;
             }
-            // Fallback to the element-level reference for templates whose planes expose no face here.
+            // Fallback to the element-level reference when no face is exposed.
             return plane.GetReference();
         }
 
@@ -413,9 +414,9 @@ namespace RvtMcp.Plugin.Handlers
             if (origin == null)
                 throw new InvalidOperationException("The family template must contain both center reference planes at the origin, as in a standard 3D family template.");
             var references = new ReferenceArray();
-            references.Append(PlaneReference(first));
-            references.Append(PlaneReference(origin));
-            references.Append(PlaneReference(second));
+            references.Append(PlaneReference(first, plan));
+            references.Append(PlaneReference(origin, plan));
+            references.Append(PlaneReference(second, plan));
             var dimension = factory.NewDimension(plan, line, references);
             dimension.AreSegmentsEqual = true;
             if (!dimension.AreSegmentsEqual)
@@ -450,7 +451,7 @@ namespace RvtMcp.Plugin.Handlers
                 var name = vertical ? (midpoint.X > 0 ? "RvtMcp Right" : "RvtMcp Left")
                     : (midpoint.Y > 0 ? "RvtMcp Front" : "RvtMcp Back");
                 var plane = planes.First(p => p.Name == name);
-                var alignment = doc.FamilyCreate.NewAlignment(plan, plane.GetReference(), edge.Reference);
+                var alignment = doc.FamilyCreate.NewAlignment(plan, PlaneReference(plane, plan), edge.Reference);
                 if (alignment == null) throw new InvalidOperationException("Could not align the extrusion profile to " + name + ".");
                 alignments.Add(alignment.Id); // NewAlignment returns a locked Dimension.
             }

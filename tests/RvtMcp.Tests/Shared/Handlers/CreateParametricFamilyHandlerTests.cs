@@ -281,8 +281,9 @@ namespace Autodesk.Revit.DB {
   // non-geometric element reference; NewDimension must reject it. After regeneration the
   // plane's PlanarFace exposes a genuine geometric reference (see PlaneGeometryElement).
   public Reference GetReference()=>new Reference{IsGeometric=Document.Regenerated};
-  public PlaneGeometryElement get_Geometry(Options o)=>new PlaneGeometryElement(Document.Regenerated); }
- public class ViewPlan:Element { public bool IsTemplate; public ViewType ViewType=ViewType.FloorPlan; public Level GenLevel; public ViewPlan(Document d):base(d){} }
+  public PlaneGeometryElement get_Geometry(Options o)=>new PlaneGeometryElement(Document.Regenerated&&o.ComputeReferences); }
+ public class View:Element { public View(Document d):base(d){} }
+ public class ViewPlan:View { public bool IsTemplate; public ViewType ViewType=ViewType.FloorPlan; public Level GenLevel; public ViewPlan(Document d):base(d){} }
  public class SketchPlane { public static SketchPlane Create(Document doc,Plane plane)=>new SketchPlane(); }
 
  public class Sketch { private Document Doc; private List<ModelCurve> Curves=new List<ModelCurve>(); public Sketch(Document d){Doc=d;} public void Add(ModelCurve c){Curves.Add(c);}
@@ -299,7 +300,7 @@ namespace Autodesk.Revit.DB {
   public ParameterSet AssociatedParameters=new ParameterSet(); public object GetUnitTypeId()=>Unit; }
  public class Solid { public double Volume=1; public bool IsElementGeometry=true; }
  public class GeometryElement:IEnumerable<Solid> { public IEnumerator<Solid> GetEnumerator(){yield return new Solid{IsElementGeometry=Document.Scenario!="foreign_geometry"};} IEnumerator IEnumerable.GetEnumerator()=>GetEnumerator(); }
- public class Options { }
+ public class Options { public bool ComputeReferences; public bool IncludeNonVisibleObjects; public View View; }
  public class Extrusion:Element { public Extrusion(Document d):base(d){Sketch=new Sketch(d);} public Sketch Sketch; public double Height;
   private Parameter End=new Parameter(); private Parameter Start=new Parameter();
   public void SetLoops(CurveArrArray loops){foreach(var l in loops.Items[0].Items){var line=(Line)l;line.NativeReference=new Reference(line);var curve=new ModelCurve(Document,line);Sketch.Add(curve);Document.Items.Add(curve);}}

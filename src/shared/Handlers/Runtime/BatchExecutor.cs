@@ -124,6 +124,16 @@ namespace RvtMcp.Plugin.Handlers
                     continue;
                 }
 
+                // This command owns a separate family document and transaction, not the active
+                // project's transaction group. Dispatching it here would mix unrelated undo scopes.
+                if (string.Equals(cmdName, "create_parametric_family", StringComparison.OrdinalIgnoreCase))
+                {
+                    outcome.Results.Add(new { index = i, ok = false, error = "create_parametric_family cannot be invoked through batch_execute; call revit_create_parametric_family directly." });
+                    outcome.AnyFailed = true;
+                    if (!continueOnError) return outcome;
+                    continue;
+                }
+
                 if (string.Equals(cmdName, "save_document", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(cmdName, "save_checkpoint", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(cmdName, "manage_checkpoints", StringComparison.OrdinalIgnoreCase))

@@ -15,17 +15,22 @@ namespace RvtMcp.Tests;
 /// returns the seam's <c>Probe.Run(string scenario)</c>, which answers a JSON string. No
 /// newer-year symbol is defined, so shared sources follow their Revit 2022 / int32 path.
 /// The seam proves the handler's control flow, not native Revit behaviour.
+/// An overload accepts explicit symbols for a version-specific R27 seam.
 /// </summary>
 internal static class HandlerProbe
 {
     public static Func<string, JObject> Compile(string seam, string[] sources, [CallerFilePath] string file = "")
+        => Compile(seam, sources, symbols: null, file);
+
+    public static Func<string, JObject> Compile(string seam, string[] sources, string[] symbols, [CallerFilePath] string file = "")
     {
         var root = RepoRoot(file);
         var texts = sources.Select(path => File.ReadAllText(Path.Combine(root, path))).Append(seam);
         var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator)
             .Append(typeof(JObject).Assembly.Location).Distinct().Select(path => MetadataReference.CreateFromFile(path));
         var compilation = CSharpCompilation.Create("HandlerProbe_" + Guid.NewGuid().ToString("N"),
-            texts.Select(text => CSharpSyntaxTree.ParseText(text)), references,
+            texts.Select(text => CSharpSyntaxTree.ParseText(text,
+                new CSharpParseOptions(preprocessorSymbols: symbols))), references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
         using var output = new MemoryStream();
         var emitted = compilation.Emit(output);

@@ -15,6 +15,7 @@ namespace RvtMcp.Tests
         private static readonly string[] FamiliesToolsInClass =
         {
             "revit_audit_families",
+            "revit_create_parametric_family",
             "revit_duplicate_family_type",
             "revit_export_family_to_path",
             "revit_get_family_instances",
@@ -165,6 +166,27 @@ namespace RvtMcp.Tests
             Assert.Single(json["parameter_names"]);
         }
 
+        [Fact]
+        public async Task Create_parametric_family_sends_mm_dimensions_and_never_overwrites()
+        {
+            var sent = await Capture.Send(() => FamiliesTools.CreateParametricFamily(
+                "Cabinet", @"C:\Templates\Generic Model.rft", @"C:\Families\Cabinet.rfa",
+                1200, 600, 900, "Standard", 120));
+
+            Assert.Equal("create_parametric_family", sent.Command);
+            var json = sent.Json();
+            Assert.Equal("Cabinet", json.Value<string>("family_name"));
+            Assert.Equal(@"C:\Templates\Generic Model.rft", json.Value<string>("template_path"));
+            Assert.Equal(@"C:\Families\Cabinet.rfa", json.Value<string>("output_path"));
+            Assert.Equal(1200, json.Value<double>("length_mm"));
+            Assert.Equal(600, json.Value<double>("width_mm"));
+            Assert.Equal(900, json.Value<double>("height_mm"));
+            Assert.Equal("Length,Width,Height", json.Value<string>("parameter_names"));
+            Assert.Equal("type", json.Value<string>("parameter_scope"));
+            Assert.Equal("Standard", json.Value<string>("type_name"));
+            Assert.Equal(120, sent.TimeoutSeconds);
+            Assert.Null(json["overwrite_existing"]);
+        }
         [Fact]
         public async Task Export_family_to_path_sends_output_path_and_string_id()
         {

@@ -1143,6 +1143,28 @@
       "result": "Error: golden probe failure"
     }
   },
+  "revit_create_parametric_family": {
+    "success": {
+      "calls": [
+        {
+          "command": "create_parametric_family",
+          "params": "{\"family_name\":\"probe\",\"template_path\":\"C:\\\\probe\\\\file.dat\",\"output_path\":\"C:\\\\probe\\\\file.dat\",\"length_mm\":1.0,\"width_mm\":1.0,\"height_mm\":1.0,\"parameter_names\":\"Length,Width,Height\",\"parameter_scope\":\"type\",\"type_name\":\"Standard\",\"timeout_seconds\":600}",
+          "timeout": 600
+        }
+      ],
+      "result": "{\r\n  \"golden_probe\": true,\r\n  \"items\": [\r\n    1,\r\n    2\r\n  ]\r\n}"
+    },
+    "failure": {
+      "calls": [
+        {
+          "command": "create_parametric_family",
+          "params": "{\"family_name\":\"probe\",\"template_path\":\"C:\\\\probe\\\\file.dat\",\"output_path\":\"C:\\\\probe\\\\file.dat\",\"length_mm\":1.0,\"width_mm\":1.0,\"height_mm\":1.0,\"parameter_names\":\"Length,Width,Height\",\"parameter_scope\":\"type\",\"type_name\":\"Standard\",\"timeout_seconds\":600}",
+          "timeout": 600
+        }
+      ],
+      "result": "Error: golden probe failure"
+    }
+  },
   "revit_create_pipe": {
     "success": {
       "calls": [

@@ -1,6 +1,6 @@
 {
   "generated_by": "ToolsListSnapshotTests",
-  "tool_count": 260,
+  "tool_count": 261,
   "tools": [
     {
       "name": "revit_accept_bake_suggestion",
@@ -1995,6 +1995,61 @@
       },
       "annotations": {
         "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "revit_create_parametric_family",
+      "description_hash": "sha256:f71b5f237ba8a8d31c879829476229a02d0e452a1950ef0505c9df5c08ce0060",
+      "inputSchema": {
+        "properties": {
+          "familyName": {
+            "description": "",
+            "type": "String"
+          },
+          "heightMm": {
+            "description": "",
+            "type": "Double"
+          },
+          "lengthMm": {
+            "description": "",
+            "type": "Double"
+          },
+          "outputPath": {
+            "description": "",
+            "type": "String"
+          },
+          "templatePath": {
+            "description": "",
+            "type": "String"
+          },
+          "timeout_seconds": {
+            "description": "",
+            "type": "Int32"
+          },
+          "typeName": {
+            "description": "",
+            "type": "String"
+          },
+          "widthMm": {
+            "description": "",
+            "type": "Double"
+          }
+        },
+        "required": [
+          "familyName",
+          "templatePath",
+          "outputPath",
+          "lengthMm",
+          "widthMm",
+          "heightMm"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "destructiveHint": false,
         "idempotentHint": false,
         "openWorldHint": false,
         "readOnlyHint": false

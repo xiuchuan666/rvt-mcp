@@ -55,6 +55,14 @@ namespace RvtMcp.Server
         public static async Task<string> ListFamilyTypesInFamily(string familyId = "", string familyName = "", bool includeParameterValues = true, bool includeBuiltInOnly = false, int startIndex = 0, int maxTypes = 100, string[] parameterNames = null)
             => await ToolGateway.CallAsync("list_family_types_in_family", new { family_id = familyId, family_name = familyName, include_parameter_values = includeParameterValues, include_built_in_only = includeBuiltInOnly, start_index = startIndex, max_types = maxTypes, parameter_names = parameterNames });
 
+        [McpServerTool(Name = "revit_create_parametric_family", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false), System.ComponentModel.Description("Revit 2027 only: create a new native, editable .rfa family with one rectangular extrusion controlled by Length, Width and Height type parameters. Supply familyName, an existing local family templatePath (.rft), a new local outputPath (.rfa), lengthMm/widthMm/heightMm and optional typeName. Existing files are never overwritten. Returns parameter associations and geometry read-back; the current project is not edited. Confirm the target (an active document or Home) before calling. Not available inside revit_batch_execute because the family owns its own transaction. Requires the families toolset. timeout_seconds: plugin wait 1-900s, default 600.")]
+        public static async Task<string> CreateParametricFamily(string familyName, string templatePath, string outputPath, double lengthMm, double widthMm, double heightMm, string typeName = "Standard", int timeout_seconds = 600)
+        {
+            var timeoutError = ToolGateway.ValidateTimeoutSeconds(timeout_seconds);
+            if (timeoutError != null) return timeoutError;
+            return await ToolGateway.CallAsync("create_parametric_family", new { family_name = familyName, template_path = templatePath, output_path = outputPath, length_mm = lengthMm, width_mm = widthMm, height_mm = heightMm, parameter_names = "Length,Width,Height", parameter_scope = "type", type_name = typeName, timeout_seconds }, timeout_seconds);
+        }
+
         [McpServerTool(Name = "revit_export_family_to_path", ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = false), System.ComponentModel.Description("Save a loadable family from the current project back to an .rfa file at outputPath. Writes to disk (not ReadOnly). Rejects in-place and system families. overwriteExisting=false errors if the file already exists. Uses doc.EditFamily + Document.SaveAs." +
             " May overwrite existing output files. Revit Undo cannot restore them; back up the destination first.")]
         public static async Task<string> ExportFamilyToPath(string outputPath, string familyId = "", string familyName = "", bool overwriteExisting = false)

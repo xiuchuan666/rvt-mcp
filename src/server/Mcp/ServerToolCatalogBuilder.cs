@@ -26,6 +26,7 @@ namespace RvtMcp.Server
         private static readonly HashSet<string> LongRunTools = new(StringComparer.Ordinal)
         {
             "load_family_from_path",
+            "create_parametric_family",
             "open_model",
             "link_revit_model",
             "reload_link"

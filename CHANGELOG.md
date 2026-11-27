@@ -29,6 +29,11 @@
 
 Install only the [latest GitHub Release](https://github.com/bimwright/rvt-mcp/releases/latest). v0.1.0–v0.5.0 are kept as git tags for history; any GitHub Releases for them are no longer published, and the legacy NuGet package `Bimwright.Rvt.Server` (0.1–0.3) is obsolete.
 
+## Unreleased
+
+- Catalog counts: `--toolsets all` **258**, adaptive bake **261**, and bare defaults **63**.
+- Add Revit 2027 `revit_create_parametric_family`: author a native, editable rectangular extrusion with Length, Width and Height type parameters. Save to a new local `.rfa` only; failed creation closes the family without writing the requested output. Native Revit 2027 hosted E2E, including reopening and flexing the saved family, remains required.
+
 ## v2.5.2 — 2026-11-26
 
 This release begins an ongoing MCP gateway upgrade focused on cleaner server instructions, tool discovery, and client compatibility.

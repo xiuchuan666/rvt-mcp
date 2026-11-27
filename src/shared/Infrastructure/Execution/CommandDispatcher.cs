@@ -105,6 +105,9 @@ namespace RvtMcp.Plugin
             Register(new Handlers.GetFamilyInstancesHandler());
             Register(new Handlers.ListFamilyTypesInFamilyHandler());
             Register(new Handlers.ExportFamilyToPathHandler());
+#if REVIT2027
+            Register(new Handlers.CreateParametricFamilyHandler());
+#endif
             // Phase 14: MEP Systems
             Register(new Handlers.CreateDuctHandler());
             Register(new Handlers.CreatePipeHandler());

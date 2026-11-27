@@ -16,8 +16,8 @@ namespace RvtMcp.Plugin.Handlers
     /// <summary>
     /// Revit 2027 family-authoring slice: one native extrusion whose Length, Width and Height
     /// are type parameters driven by labelled dimensions and alignment locks.
-    /// Length/Width: reference planes at exact sketch positions → alignment lock → labelled dimension.
-    /// Height: associated directly to EXTRUSION_END_PARAM.
+    /// Order: create planes → label dimensions on sketch curves → alignment lock → Height association.
+    /// Label-before-lock is required: Revit rejects FamilyLabel on locked sketch curves.
     /// </summary>
     public sealed class CreateParametricFamilyHandler : IRevitCommand
     {
@@ -139,14 +139,14 @@ namespace RvtMcp.Plugin.Handlers
                             var backPlane = CreateNamedPlane(familyDoc, plan, "RvtMcp Back", new XYZ(-halfLength * 2, halfWidth, 0), new XYZ(halfLength * 2, halfWidth, 0));
                             familyDoc.Regenerate();
 
-                            stage = "aligning and locking sketch curves to reference planes";
-                            AlignSketchCurvesToPlanes(familyDoc, plan, extrusion, leftPlane, rightPlane, frontPlane, backPlane);
-                            familyDoc.Regenerate();
-
                             stage = "creating labelled Length dimension from sketch curve references";
                             CreateLabelledDimensionFromCurves(familyDoc, plan, extrusion, isLength: true, parameters["Length"]);
                             stage = "creating labelled Width dimension from sketch curve references";
                             CreateLabelledDimensionFromCurves(familyDoc, plan, extrusion, isLength: false, parameters["Width"]);
+                            familyDoc.Regenerate();
+
+                            stage = "aligning and locking sketch curves to reference planes";
+                            AlignSketchCurvesToPlanes(familyDoc, plan, extrusion, leftPlane, rightPlane, frontPlane, backPlane);
                             familyDoc.Regenerate();
 
                             stage = "associating extrusion Height";

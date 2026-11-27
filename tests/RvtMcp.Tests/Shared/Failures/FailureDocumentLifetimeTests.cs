@@ -16,7 +16,7 @@ public class FailureDocumentLifetimeTests
     private static readonly HashSet<string> LifetimeMethods = new()
     { "OnDocumentClosed", "OnDocumentClosing", "PruneClosedDocuments", "PruneDocuments", "IsLiveDocument" };
     private static readonly HashSet<string> FamilyMethods = new()
-    { "AuthorizeFamilySave", "AllowFamilySaveAs" };
+    { "AuthorizeFamilySave", "AllowFamilySaveAs", "Cancel", "OnSaved", "ObserveCancelledOrFailed" };
 
 
     [Fact]
@@ -48,6 +48,31 @@ public class FailureDocumentLifetimeTests
         if (!expectedEventCancelled) Assert.Equal(1, values[3]);   // clean path recorded exactly one save operation
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Family_save_refusal_records_cancel_and_post_event_preserves_the_original_error_code(bool saveOpFails)
+    {
+        var v = (object[])CompileFamilyProbe().DeclaringType!.GetMethod("PostCancelProbe")!
+            .Invoke(null, new object[] { saveOpFails })!;
+        Assert.Equal("FAILURE_STORAGE_FAILED", v[0]); // original stop code after the pre-event
+        Assert.True((bool)v[1]);                      // Active.Cancelled set by the real Cancel(...)
+        Assert.Equal("cancelled", v[2]);              // NativeOutcome recorded as cancelled
+        Assert.Equal("FAILURE_STORAGE_FAILED", v[3]); // OnSaved(Cancelled) did NOT overwrite ErrorCode
+        Assert.Equal(0, v[4]);                        // no misleading extra incident from the post-event
+        Assert.True((bool)v[5]);                      // still stopped
+    }
+
+    [Fact]
+    public void Family_save_refusal_on_a_non_cancellable_event_reports_unknown_without_throwing()
+    {
+        var v = (object[])CompileFamilyProbe().DeclaringType!.GetMethod("NonCancellableProbe")!
+            .Invoke(null, Array.Empty<object>())!;
+        Assert.Equal("unknown", v[0]);                // could not cancel → outcome unknown
+        Assert.False((bool)v[1]);                     // Operation.Complete = false
+        Assert.Equal("REVIT_FAILURE_ROLLED_BACK", v[2]); // original code preserved
+    }
+
     private static MethodInfo CompileFamilyProbe([CallerFilePath] string file = "")
     {
         var root = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(file)!, "..", "..", "..", ".."));
@@ -56,29 +81,50 @@ public class FailureDocumentLifetimeTests
             .Where(method => FamilyMethods.Contains(method.Identifier.ValueText))
             .Select(method => method.ToFullString()
                 .Replace("Handlers.OpenModelLocalPolicy", "OpenModelLocalPolicy")
-                .Replace("Handlers.ParametricFamilyInput", "ParametricFamilyInput"));
+                .Replace("Handlers.ParametricFamilyInput", "ParametricFamilyInput")
+                // OnSaved's Invalidate/State/Attach book-keeping is not under test; the cancel path is.
+                .Replace("Documents.TryGetValue(document, out var prior);", "DocumentState prior = null;")
+                .Replace("Invalidate(prior);", "")
+                .Replace("var state = State(document, newIdentity);", "DocumentState state = null;")
+                .Replace("Active.Attach(prior); Active.Attach(state);", ""));
         var types = syntax.DescendantNodes().OfType<ClassDeclarationSyntax>()
-            .Where(type => type.Identifier.ValueText == "FamilyAuthoringAuthorization" || type.Identifier.ValueText == "ActionOnDispose")
+            .Where(type => type.Identifier.ValueText == "FamilyAuthoringAuthorization"
+                || type.Identifier.ValueText == "ActionOnDispose" || type.Identifier.ValueText == "SaveCorrelation")
             .Select(type => type.ToFullString());
         // Active is a REAL scope double (not stubbed to null): Scoped() is true, SaveOperation()
-        // records the call and can inject a storage failure, NativeCommitted is observed. This
-        // exercises exactly the stop/cancel/pre-commit logic that the previous stub hid.
+        // records the call and can inject a storage failure, NativeCommitted/Cancelled/ErrorCode are
+        // observed. The REAL Cancel(...) and OnSaved(...) run, so the OnDocumentSavedAs(Cancelled)
+        // coupling that used to overwrite ErrorCode is genuinely exercised, not stubbed away.
         var text = "using System; using System.IO; using System.Collections.Generic; using RvtMcp.Plugin.Handlers; public class FamilyProbe {public static class ParametricFamilyInput { public static string TemporaryOutputDirectory(string path)=>Path.GetDirectoryName(path); } " + string.Join("\n", types) + string.Join("\n", methods) + @"
 static FamilyAuthoringAuthorization _familyAuthoring;
 static Scope Active = new Scope();
 static bool Scoped()=>true;
+static SaveCorrelation _blockedSave;
+public class Incident { public string ModelScopeKey,ModelTitle,NativeAction,NativeContextDescription; public bool Complete; }
+public class FailureModel { public string ModelScopeKey,Title; }
+public enum RevitAPIEventStatus { Succeeded, Cancelled, Failed }
+public class Model { public string ModelScopeKey=""model""; }
+public class DocumentState { public Model Model=new Model(); }
+public class Op { public string OperationId=""op""; public bool Complete=true; public string ActiveModelBefore; }
 public class Scope {
- public bool Stopped, StorageFailed, NativeCommitted, FailSaveOperation;
- public int SaveCalls;
+ public bool Stopped, StorageFailed, NativeCommitted, FailSaveOperation, Cancelled;
+ public string ErrorCode, NativeOutcome;
+ public int SaveCalls, Incidents, Stops;
+ public Op Operation=new Op();
  public void SaveOperation() { SaveCalls++; if(FailSaveOperation){StorageFailed=true;Stopped=true;} }
+ public void Stop(string code,DocumentState state){Stops++;Stopped=true;if(ErrorCode==null)ErrorCode=code;}
+ public Incident NewIncident(DocumentState s,string a,string b,string action=null){Incidents++;return new Incident();}
+ public void Record(Incident i){}
+ public void ClaimModel(FailureModel m){}
+}
+static DocumentState State(Document doc)=>new DocumentState();
+public class RevitAPIPreEventArgs { public bool Cancellable=true; public bool Cancelled;
+ public void Cancel(){if(!Cancellable)throw new InvalidOperationException(""not cancellable"");Cancelled=true;} public bool IsCancelled()=>Cancelled; }
+public class DocumentSavingAsEventArgs : RevitAPIPreEventArgs {
+ public Document Document;public string PathName;public bool IsSavingAsCentralFile;
 }
 static class McpDocument {public static Document CurrentOwnedDocument(Document doc)=>doc;}
 public class Document {public bool IsValidObject=true,IsFamilyDocument=true,IsWorkshared;}
-public class DocumentState {}
-public class DocumentSavingAsEventArgs {
- public Document Document;public string PathName;public bool IsSavingAsCentralFile;
- public bool Cancelled; public void Cancel(){Cancelled=true;} public bool IsCancelled()=>Cancelled;
-}
 public static object[] Run() {
  var dir=Path.Combine(Path.GetTempPath(),""family-save-probe-""+Guid.NewGuid().ToString(""N""));Directory.CreateDirectory(dir);
  var doc=new Document();var path=Path.Combine(dir,"".rvtmcp-test.rfa"");
@@ -104,6 +150,33 @@ public static object[] StoppedProbe(bool stopped,bool storageFailed,bool already
   bool allowed;
   using(AuthorizeFamilySave(doc,path)) { allowed=AllowFamilySaveAs(args,null); }
   return new object[]{allowed,Active.NativeCommitted,args.Cancelled,Active.SaveCalls};
+ } finally {Directory.Delete(dir,true);}
+}
+// P1-1: after a refusal, Revit raises OnDocumentSavedAs(Cancelled). The real OnSaved must see
+// Active.Cancelled==true (set by Cancel) and return early, so the ORIGINAL ErrorCode survives and
+// no misleading REVIT_OPERATION_REQUIRES_USER incident is recorded.
+public static object[] PostCancelProbe(bool storageFailedDuringSaveOp) {
+ var dir=Path.Combine(Path.GetTempPath(),""family-postcancel-""+Guid.NewGuid().ToString(""N""));Directory.CreateDirectory(dir);
+ var doc=new Document();var path=Path.Combine(dir,"".rvtmcp-test.rfa"");
+ try {
+  Active=new Scope{Stopped=true,ErrorCode=""FAILURE_STORAGE_FAILED"",FailSaveOperation=storageFailedDuringSaveOp};
+  var args=new DocumentSavingAsEventArgs{Document=doc,PathName=path};
+  using(AuthorizeFamilySave(doc,path)) { AllowFamilySaveAs(args,null); }
+  var codeAfterPre=Active.ErrorCode; var cancelledAfterPre=Active.Cancelled; var nativeOutcome=Active.NativeOutcome;
+  var incidentsBefore=Active.Incidents;
+  OnSaved(RevitAPIEventStatus.Cancelled,doc,""save_as"",true); // the real post-event
+  return new object[]{codeAfterPre,cancelledAfterPre,nativeOutcome,Active.ErrorCode,Active.Incidents-incidentsBefore,Active.Stopped};
+ } finally {Directory.Delete(dir,true);}
+}
+// P1-1: a non-cancellable SavingAs event must not throw out of Cancel(); the scope reports unknown.
+public static object[] NonCancellableProbe() {
+ var dir=Path.Combine(Path.GetTempPath(),""family-noncancel-""+Guid.NewGuid().ToString(""N""));Directory.CreateDirectory(dir);
+ var doc=new Document();var path=Path.Combine(dir,"".rvtmcp-test.rfa"");
+ try {
+  Active=new Scope{Stopped=true,ErrorCode=""REVIT_FAILURE_ROLLED_BACK""};
+  var args=new DocumentSavingAsEventArgs{Document=doc,PathName=path,Cancellable=false};
+  using(AuthorizeFamilySave(doc,path)) { AllowFamilySaveAs(args,null); }
+  return new object[]{Active.NativeOutcome,Active.Operation.Complete,Active.ErrorCode};
  } finally {Directory.Delete(dir,true);}
 }
 }";
@@ -165,6 +238,8 @@ public static object[] StoppedProbe(bool stopped,bool storageFailed,bool already
     }
 
     private const string Body = """
+public class DialogContextStub { public void InvalidateFamily() { FamilyBumps++; } public int FamilyBumps; }
+static DialogContextStub DialogContext = new DialogContextStub();
 public class Life { public bool Valid = true; }
 public class Document {
  public Life Life;

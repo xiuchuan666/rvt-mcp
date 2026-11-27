@@ -699,28 +699,14 @@ namespace RvtMcp.Plugin.Failures
                     ExecutionStarted = ExecutionStarted, HandlerSucceeded = result?.Success == true,
                     IsReadOnly = IsRead, HasPersistedRecord = Persisted, HasIncidents = Incidents.Count > 0,
                     PolicyStopped = Stopped, NativeCancelled = Cancelled, GroupRolledBack = BatchRolledBack,
-                    AnyCommittedChanges = AnyCommitted,
-                    // A saved temporary family file that was fully discarded (document closed, temp
-                    // file deleted) is not an external commit: nothing survived the failed call.
+                    // Private family commits still count as an applied change while the family is NOT
+                    // fully discarded (committed doc left open = a real effect to report). Once the
+                    // family was discarded and its temp file deleted, nothing survived the failed call.
+                    AnyCommittedChanges = AnyCommitted || (PrivateTransientCommits > 0 && !PrivateFamilyDiscarded),
                     NativeCommitted = NativeCommitted && !PrivateFamilyDiscarded,
                     StorageFailed = StorageFailed, NativeOutcomeUnknown = NativeOutcome == "unknown",
                     ActiveDocumentObserved = _activeDocumentBeforeObserved && activeDocumentAfterObserved
                 });
-                // Private transient commits carry no external effect once the owned temporary family
-                // was discarded and deleted. Recompute the receipt so such failures are not reported
-                // as mutationApplied:true / outcome:partial when no project/user document changed.
-                if (PrivateFamilyDiscarded && !AnyCommitted && !NativeCommitted && PrivateTransientCommits > 0)
-                {
-                    FailureCompletion.Apply(Operation, new FailureCompletionFacts
-                    {
-                        ExecutionStarted = ExecutionStarted, HandlerSucceeded = result?.Success == true,
-                        IsReadOnly = IsRead, HasPersistedRecord = Persisted, HasIncidents = Incidents.Count > 0,
-                        PolicyStopped = Stopped, NativeCancelled = Cancelled, GroupRolledBack = BatchRolledBack,
-                        AnyCommittedChanges = false, NativeCommitted = false,
-                        StorageFailed = StorageFailed, NativeOutcomeUnknown = NativeOutcome == "unknown",
-                        ActiveDocumentObserved = _activeDocumentBeforeObserved && activeDocumentAfterObserved
-                    });
-                }
                 if (Operation.RequiresReview)
                 {
                     foreach (var key in Operation.ModelScopeKeys.Where(k => !Incidents.Any(i => i.ModelScopeKey == k && i.State == "open")).ToList())
@@ -734,16 +720,10 @@ namespace RvtMcp.Plugin.Failures
                 }
                 if (Stopped && result != null)
                 {
-                    // The native stop code is the authoritative error, but a typed handler's detailed
-                    // lifecycle diagnostics (e.g. retained temporary .rfa path, close/cleanup state)
-                    // must survive. Preserve them as structured data instead of losing them to the
-                    // bare error code when the stop overwrites result.Error.
-                    if (!string.IsNullOrEmpty(result.Error) && result.Error != (ErrorCode ?? "REVIT_FAILURE_ROLLED_BACK"))
-                    {
-                        var data = result.Data as JObject ?? new JObject();
-                        if (data["lifecycle_diagnostic"] == null) data["lifecycle_diagnostic"] = result.Error;
-                        result.Data = data;
-                    }
+                    // The native stop code is the authoritative error. result.Data is left untouched:
+                    // it may be an anonymous payload (batch_execute results/rolledBack, save_checkpoint
+                    // recovery fields, …) that must survive, and any lifecycle diagnostic is written by
+                    // the handler itself (see CreateParametricFamilyHandler), already redacted upstream.
                     result.Success = false;
                     result.Error = ErrorCode ?? "REVIT_FAILURE_ROLLED_BACK";
                 }

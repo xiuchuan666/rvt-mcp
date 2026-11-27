@@ -225,11 +225,16 @@ namespace RvtMcp.Plugin.Failures
                     _lastOpened = null;
                     if (args.Operation == UndoOperation.TransactionCommitted || args.Operation == UndoOperation.TransactionRedone)
                     {
-                        if (McpDocument.CurrentOwnedDocument(document) != null)
+                        // Only create_parametric_family treats commits on its owned temporary family
+                        // document as private. send_code_to_revit also TrackOpens documents (via
+                        // SendCodeDocumentRewriter) and MUST keep the original AnyCommitted /
+                        // CommittedLog accounting for them — this branch is scoped by tool, not by
+                        // ownership alone, so ordinary script commits are never suppressed.
+                        if (Active.Operation.Tool == "create_parametric_family"
+                            && McpDocument.CurrentOwnedDocument(document) != null)
                         {
-                            // Commits on a tool-owned temporary family document are private until the
-                            // final output file exists. They must not be reported as external mutation.
-                            if (Active != null) Active.PrivateTransientCommits++;
+                            // Private until the final output file exists; not external mutation.
+                            Active.PrivateTransientCommits++;
                         }
                         else
                         { Active.AnyCommitted = true; Active.BatchRolledBack = false; Active.CommittedLog.Committed(args.GetTransactionNames()); }
@@ -254,7 +259,13 @@ namespace RvtMcp.Plugin.Failures
             try
             {
                 if (!opened) DialogContext.Observe(DocumentTargetGuard.GetOrCreateToken(doc));
-                else if (doc != null && !doc.IsLinked) DialogContext.Invalidate();
+                else if (doc != null && !doc.IsLinked)
+                {
+                    // A newly opened non-linked document changes both the dialog-answer document
+                    // identity and the family lifecycle stamp (offset 8).
+                    DialogContext.Invalidate();
+                    DialogContext.InvalidateFamily();
+                }
             }
             catch (Exception ex)
             {
@@ -435,8 +446,8 @@ namespace RvtMcp.Plugin.Failures
         }
 
         // Returns true when this tool-owned family SavingAs event has been handled (either released
-        // for the one authorized save, or cancelled here). Returning true after args.Cancel() means
-        // the write was REFUSED, not permitted. Returns false only to fall through to ordinary policy.
+        // for the one authorized save, or cancelled here). Returning true after a refusal means the
+        // write was REFUSED, not permitted. Returns false only to fall through to ordinary policy.
         private static bool AllowFamilySaveAs(DocumentSavingAsEventArgs args, DocumentState state)
         {
             var authorization = _familyAuthoring;
@@ -452,9 +463,14 @@ namespace RvtMcp.Plugin.Failures
             // This is a pre-event: Revit has not written anything yet. Never set NativeCommitted here
             // (only OnSaved with status Succeeded does that). And never release the write when the
             // scope is already stopped/storage-failed or another add-in already cancelled the event.
+            // Refuse through the shared Cancel(...) helper (Cancellable/IsCancelled guarded, sets
+            // Active.Cancelled + NativeOutcome, records _blockedSave) so the later
+            // OnDocumentSavedAs(Cancelled) is recognized as my own pre-event capture and does NOT
+            // overwrite the original ErrorCode via ObserveCancelledOrFailed.
             if (Scoped() && (Active.Stopped || Active.StorageFailed || args.IsCancelled()))
             {
-                args.Cancel();
+                Cancel(args, state, "save_as",
+                    Active.StorageFailed ? "FAILURE_STORAGE_FAILED" : Active.ErrorCode ?? "REVIT_OPERATION_REQUIRES_USER");
                 return true;
             }
             authorization.Used = true;
@@ -465,7 +481,8 @@ namespace RvtMcp.Plugin.Failures
                 Active.SaveOperation();
                 if (Active.Stopped || Active.StorageFailed)
                 {
-                    args.Cancel();
+                    Cancel(args, state, "save_as",
+                        Active.StorageFailed ? "FAILURE_STORAGE_FAILED" : Active.ErrorCode ?? "REVIT_OPERATION_REQUIRES_USER");
                     return true;
                 }
             }
@@ -573,6 +590,12 @@ namespace RvtMcp.Plugin.Failures
 
         private static void OnDocumentClosed(object sender, DocumentClosedEventArgs args)
         {
+            // A completed close changes the native document lifecycle (e.g. back to Home). Bump the
+            // family slot only — closing a background document never invalidates dialog answers.
+            if (args.Status == RevitAPIEventStatus.Succeeded)
+            {
+                try { DialogContext?.InvalidateFamily(); } catch { }
+            }
             if (Closing.TryGetValue(args.DocumentId, out var state))
             {
                 Closing.Remove(args.DocumentId);

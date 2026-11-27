@@ -36,8 +36,12 @@ namespace RvtMcp.Failures
 
         internal void Observe(string activeDocumentId)
         {
+            // Same document (including another view of it) changes nothing: neither slot moves, so
+            // ordinary dialog answers survive view switches. A REAL document-identity change moves
+            // both slots — offset 0 for dialog answers and offset 8 for family queue-race detection.
             if (activeDocumentId == _documentId) return;
             Invalidate();
+            InvalidateFamily();
             _documentId = activeDocumentId;
         }
 
@@ -88,6 +92,9 @@ namespace RvtMcp.Failures
             }
             catch (IOException) { return null; }
             catch (UnauthorizedAccessException) { return null; }
+            // Defensive: an older add-in's 8-byte map normally still reads slot 8 as 0 (page-granular,
+            // zero-initialized), but never let a short-map view fault escape to the gateway.
+            catch (ArgumentOutOfRangeException) { return null; }
         }
 
         private static string Name(string target) => @"Local\RvtMcp.DialogContext." + target;

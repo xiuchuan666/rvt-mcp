@@ -97,7 +97,12 @@ namespace RvtMcp.Plugin.Handlers
                     // (e.g. Home state or a third-party callback). Document.Close cannot close the active
                     // document, so an active family here means no save, no temp file, nothing to clean up.
                     if (IsActiveDocument(app, familyDoc))
+                    {
+                        // Mark closeAttempted so the catch block does not re-diagnose and duplicate
+                        // this same active-document message; no close is possible or needed here.
+                        closeAttempted = true;
                         throw new InvalidOperationException("Revit opened the new family as the active document, which cannot be closed through Document.Close. The family remains open for user review; no file was written.");
+                    }
                     stage = "creating the native extrusion and parameter constraints";
 
                     var dimensions = new[] { lengthMm, widthMm, heightMm };
@@ -156,7 +161,10 @@ namespace RvtMcp.Plugin.Handlers
                     if (!File.Exists(temporaryPath)) throw new IOException("Revit did not create the temporary family file.");
                     // Second guard: a third-party event could have activated the family mid-operation.
                     if (IsActiveDocument(app, familyDoc))
+                    {
+                        closeAttempted = true; // avoid duplicating the active-document text in the catch block
                         throw new IOException("The saved temporary family became Revit's active document and cannot be closed through Document.Close. It remains open for user review; the requested output was not written.");
+                    }
                     closeAttempted = true;
                     if (!McpDocument.Close(familyDoc, false))
                         throw new IOException("Revit did not close the temporary family document. The saved temporary file was retained; the requested output was not written.");

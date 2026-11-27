@@ -731,7 +731,7 @@ namespace RvtMcp.Server
                             else if (rejection == null && !ToolReadPolicy.IsReadOnly(command)
                                 // Send-code also supports Home; the add-in checks the actual document at execution.
                                 && !binding.CanWrite(effectiveGeneration, command != "open_model" && command != "send_code_to_revit"
-                                    && command != "create_parametric_family", out var writeFailure))
+                                    && !IsFamilyCommand(command), out var writeFailure))
                                 throw new TargetException(writeFailure);
                             else if (rejection == null && declared != null && !conn.DialogAnswersProtocol)
                                 rejection = "PAIRING_REQUIRED: the bound add-in does not support dialog_answers_v2. Clear declarations or update the add-in.";

@@ -386,17 +386,11 @@ namespace RvtMcp.Tests
 
             context.InvalidateFamily();
             host.TargetStamp["document_id"] = confirmedDocument;
-            host.ResponseOverride = req => {
-                var current = DialogDocumentContext.ReadFamily(targetId);
-                var expected = req.Value<long?>("expected_context_generation");
-                if (current == expected) return new JObject { ["id"] = req["id"], ["success"] = true, ["data"] = new JObject { ["ok"] = true } };
-                return new JObject { ["id"] = req["id"], ["success"] = false,
-                    ["error"] = "DOCUMENT_CONTEXT_CHANGED: family context changed before execution.",
-                    ["_operation"] = new JObject { ["outcome"] = "not_started", ["mutationApplied"] = false } };
-            };
-            // Model the exact queue delay that must reject a stale dispatch: the native family stamp
-            // changes after WriteLine but before the host evaluates its execution guard. The stamp is
-            // sampled inside the write lock (first read), so the second read at the host differs.
+            // The FakeTcpHost's own create_parametric_family branch (above) already compares the live
+            // family stamp against expected_context_generation and rejects a mismatch with
+            // DOCUMENT_CONTEXT_CHANGED. Model the exact queue delay that must reject a stale dispatch:
+            // the native family stamp changes after WriteLine but before the host evaluates its guard.
+            // The stamp is sampled inside the write lock (first read), so the second read differs.
             var stamp = context.FamilyStamp;
             var reads = 0;
             var previousRead = ToolGateway.ReadContextStampForTests;

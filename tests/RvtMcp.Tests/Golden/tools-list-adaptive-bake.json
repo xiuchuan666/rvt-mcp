@@ -1,6 +1,6 @@
 {
   "generated_by": "ToolsListSnapshotTests",
-  "tool_count": 261,
+  "tool_count": 262,
   "tools": [
     {
       "name": "revit_accept_bake_suggestion",
@@ -6573,6 +6573,40 @@
         "idempotentHint": false,
         "openWorldHint": false,
         "readOnlyHint": false
+      }
+    },
+    {
+      "name": "revit_probe_extrusion_sketch",
+      "description_hash": "sha256:4ddab78e133d36f7268e6878dd64cba65705bdd6cb919b052d4d84334e2790cf",
+      "inputSchema": {
+        "properties": {
+          "createDimension": {
+            "description": "",
+            "type": "Boolean"
+          },
+          "createReferencePlane": {
+            "description": "",
+            "type": "Boolean"
+          },
+          "extrusionId": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "modelPath": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "modelPath"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
       }
     },
     {

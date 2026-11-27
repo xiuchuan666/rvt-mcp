@@ -22,6 +22,7 @@ namespace RvtMcp.Tests
             "revit_list_family_types_in_family",
             "revit_list_loaded_families",
             "revit_load_family_from_path",
+            "revit_probe_extrusion_sketch",
             "revit_rename_family_type",
             "revit_replace_family_type",
             "revit_unload_family"

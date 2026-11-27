@@ -3937,6 +3937,28 @@
       "result": "Error: golden probe failure"
     }
   },
+  "revit_probe_extrusion_sketch": {
+    "success": {
+      "calls": [
+        {
+          "command": "probe_extrusion_sketch",
+          "params": "{\"model_path\":\"C:\\\\probe\\\\file.dat\",\"extrusion_id\":null,\"create_reference_plane\":false,\"create_dimension\":false}",
+          "timeout": null
+        }
+      ],
+      "result": "{\r\n  \"golden_probe\": true,\r\n  \"items\": [\r\n    1,\r\n    2\r\n  ]\r\n}"
+    },
+    "failure": {
+      "calls": [
+        {
+          "command": "probe_extrusion_sketch",
+          "params": "{\"model_path\":\"C:\\\\probe\\\\file.dat\",\"extrusion_id\":null,\"create_reference_plane\":false,\"create_dimension\":false}",
+          "timeout": null
+        }
+      ],
+      "result": "Error: golden probe failure"
+    }
+  },
   "revit_project_point_onto_face": {
     "success": {
       "calls": [

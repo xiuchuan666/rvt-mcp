@@ -104,6 +104,7 @@ namespace RvtMcp.Plugin
             "list_view_templates",
             "list_worksets",
             "load_selection",
+            "probe_extrusion_sketch",
             "measure_distance_between_elements",
             "project_point_onto_face",
             "raycast_from_point",

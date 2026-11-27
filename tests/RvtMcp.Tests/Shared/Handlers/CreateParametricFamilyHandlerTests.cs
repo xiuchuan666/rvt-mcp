@@ -232,7 +232,7 @@ namespace Autodesk.Revit.Creation { public class FamilyItemFactory { public Auto
   var d=new Autodesk.Revit.DB.Dimension(Document,r.Items.Count); if(r.Items.Count==2)Document.Associations++; Document.Items.Add(d); return d; }
  public Autodesk.Revit.DB.Dimension NewAlignment(Autodesk.Revit.DB.ViewPlan v,Autodesk.Revit.DB.Reference a,Autodesk.Revit.DB.Reference b){
   if(a==null||b==null)throw new Exception("References must not be null.");
-  var d=new Autodesk.Revit.DB.Dimension(Document,2){Locked=true}; Document.Items.Add(d); return d; } } }
+  var d=new Autodesk.Revit.DB.Dimension(Document,2){IsLocked=true}; Document.Items.Add(d); return d; } } }
 namespace Autodesk.Revit.DB {
  public enum TransactionStatus { Started,Committed,RolledBack }
  public enum ViewType { FloorPlan }
@@ -308,7 +308,7 @@ namespace Autodesk.Revit.DB {
   public FamilyParameter GetAssociatedFamilyParameter(Parameter p)=>p.Definition==null?null:Copy(Parameters.Single(x=>x.Definition.Name==p.Definition.Name));
   private FamilyParameter Copy(FamilyParameter p)=>new FamilyParameter(Doc,p.Name){Id=p.Id,Value=p.Value,Formula=p.Formula}; }
  public class Dimension:Element { public Dimension(Document d,int references):base(d){References=references;} public int References;
-  public FamilyParameter FamilyLabel; public bool Locked { get; set; } public bool IsLocked=>Locked; public bool AreSegmentsEqual;
+  public FamilyParameter FamilyLabel; public bool IsLocked { get; set; } public bool Locked=>IsLocked; public bool AreSegmentsEqual;
   public void SetLabel(FamilyParameter p){FamilyLabel=p;} }
  public class FilteredElementCollector { private Document Doc; private Type RequestedType; public FilteredElementCollector(Document d){Doc=d;}
   public FilteredElementCollector OfClass(Type t){RequestedType=t;return this;} public IEnumerable<T> Cast<T>()=>Doc.Items.OfType<T>(); }
@@ -365,7 +365,7 @@ public static class Probe { public static string Run(string scenario){
   ["dimensions_created_after_regeneration"]=(doc?.DimensionsAfterRegeneration??0)==6,
   ["origin_equality_count"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>d.References==2&&d.FamilyLabel!=null&&d.FamilyLabel.Name.StartsWith("_Half"))??0,
   ["private_family_discarded"]=RvtMcp.Plugin.Failures.FailureControl.Active.PrivateFamilyDiscarded,
-  ["locked_profile_alignments"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>d.Locked)??0}.ToString(); }
+  ["locked_profile_alignments"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>d.IsLocked)??0}.ToString(); }
  finally { doc?.ReleaseFailedCloseLock();try{Directory.Delete(dir,true);}catch{} } } }
 """;
 }

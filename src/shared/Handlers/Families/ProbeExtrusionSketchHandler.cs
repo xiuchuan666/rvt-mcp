@@ -848,18 +848,8 @@ namespace RvtMcp.Plugin.Handlers
         {
             try
             {
-                // Dimension.Locked is available on Alignment (subclass) but the compile-time type
-                // is Dimension in some Revit API versions. Use reflection to set it safely.
-                var lockedProp = dimension.GetType().GetProperty("Locked");
-                if (lockedProp != null && lockedProp.CanWrite)
-                {
-                    lockedProp.SetValue(dimension, true);
-                    alignResult.Add(new JObject { ["side"] = side, ["locked"] = true });
-                }
-                else
-                {
-                    alignResult.Add(new JObject { ["side"] = side, ["error"] = "Locked property not available on " + dimension.GetType().Name });
-                }
+                dimension.IsLocked = true;
+                alignResult.Add(new JObject { ["side"] = side, ["locked"] = dimension.IsLocked });
             }
             catch (Exception ex)
             {

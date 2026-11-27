@@ -399,12 +399,7 @@ namespace RvtMcp.Plugin.Handlers
             var alignment = doc.FamilyCreate.NewAlignment(plan, sketchRef, planeRef);
             if (alignment == null) throw new InvalidOperationException("NewAlignment returned null for " + label + ".");
 
-            // Set Locked via the Alignment type (not Dimension base)
-            var lockedProp = alignment.GetType().GetProperty("Locked");
-            if (lockedProp != null && lockedProp.CanWrite)
-                lockedProp.SetValue(alignment, true);
-            else
-                throw new InvalidOperationException("Alignment.Locked property not available for " + label + ". Type: " + alignment.GetType().FullName);
+            alignment.IsLocked = true;
         }
 
         private static Dimension CreateLabelledDimension(Document doc, ViewPlan plan,
@@ -474,11 +469,7 @@ namespace RvtMcp.Plugin.Handlers
 
             // Count alignment locks
             var alignmentCount = new FilteredElementCollector(doc).OfClass(typeof(Dimension)).Cast<Dimension>()
-                .Count(d =>
-                {
-                    var lockedProp = d.GetType().GetProperty("Locked");
-                    return lockedProp != null && lockedProp.GetValue(d) is true;
-                });
+                .Count(d => d.IsLocked);
 
             return new
             {

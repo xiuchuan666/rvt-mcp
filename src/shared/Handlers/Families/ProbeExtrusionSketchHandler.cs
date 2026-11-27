@@ -97,7 +97,7 @@ namespace RvtMcp.Plugin.Handlers
                     if (reference != null)
                     {
                         curveInfo["reference_element_id"] = reference.ElementId != null ? RevitCompat.GetId(reference.ElementId) : -1;
-                        curveInfo["reference_stable"] = SafeStableRepresentation(reference);
+                        curveInfo["reference_stable"] = SafeStableRepresentation(reference, doc);
                     }
                     if (curveElement.GeometryCurve is Line line)
                     {
@@ -122,7 +122,7 @@ namespace RvtMcp.Plugin.Handlers
                     var reference = plane.GetReference();
                     if (reference != null)
                     {
-                        planeInfo["reference_stable"] = SafeStableRepresentation(reference);
+                        planeInfo["reference_stable"] = SafeStableRepresentation(reference, doc);
                     }
                     planeInfo["geometry_faces"] = ReadFaces(doc, plane, null);
                     planes.Add(planeInfo);
@@ -159,7 +159,7 @@ namespace RvtMcp.Plugin.Handlers
                             {
                                 var right = doc.FamilyCreate.NewReferencePlane(new XYZ(2, -2, 0), new XYZ(2, 2, 0), XYZ.BasisZ, plan);
                                 right.Name = "RvtMcp Probe Right";
-                                attempts.Add(new JObject { ["created_plane"] = RevitCompat.GetId(right.Id), ["stable"] = SafeStableRepresentation(right.GetReference()) });
+                                attempts.Add(new JObject { ["created_plane"] = RevitCompat.GetId(right.Id), ["stable"] = SafeStableRepresentation(right.GetReference(), doc) });
                                 doc.Regenerate();
                             }
                             if (createDimension)
@@ -251,7 +251,7 @@ namespace RvtMcp.Plugin.Handlers
                         ["area"] = face.Area,
                         ["normal"] = Point(face.FaceNormal),
                         ["origin"] = Point(face.Origin),
-                        ["reference_stable"] = face.Reference != null ? SafeStableRepresentation(face.Reference) : null
+                        ["reference_stable"] = face.Reference != null ? SafeStableRepresentation(face.Reference, doc) : null
                     });
                 }
             }
@@ -261,9 +261,9 @@ namespace RvtMcp.Plugin.Handlers
         private static ReferencePlane FindPlane(Document doc, string name)
             => new FilteredElementCollector(doc).OfClass(typeof(ReferencePlane)).Cast<ReferencePlane>().FirstOrDefault(p => p.Name == name);
 
-        private static string SafeStableRepresentation(Reference reference)
+        private static string SafeStableRepresentation(Reference reference, Document doc)
         {
-            try { return reference.ConvertToStableRepresentation(null); }
+            try { return reference.ConvertToStableRepresentation(doc); }
             catch (Exception ex) { return "ERROR: " + ex.Message; }
         }
 

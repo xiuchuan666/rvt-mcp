@@ -126,12 +126,18 @@ namespace RvtMcp.Plugin
         public static bool RequiresDocumentConfirmation(string command) => !IsReadOnly(command)
             && !string.Equals(command, "open_model", StringComparison.OrdinalIgnoreCase);
 
+        // Family authoring owns a separate new document. Its gateway binding must still be confirmed,
+        // but a project active-document ID must not block a deliberately confirmed Home target.
+        private static bool IsIndependentFamilyAuthoring(string command) =>
+            string.Equals(command, "create_parametric_family", StringComparison.OrdinalIgnoreCase);
+
         public static string DocumentRejection(string command, string expectedDocumentId, string activeDocumentId,
             bool gatewayConfirmsDocuments = true)
         {
             if (!RequiresDocumentConfirmation(command)) return null;
             if (string.IsNullOrWhiteSpace(expectedDocumentId) && !gatewayConfirmsDocuments)
                 return GatewayPairingRequired;
+            if (IsIndependentFamilyAuthoring(command)) return null;
             // An explicitly selected Home process has no document to confirm. A queued
             // script must still be rejected if a document opens before it executes.
             if (string.IsNullOrWhiteSpace(expectedDocumentId) && string.IsNullOrEmpty(activeDocumentId)

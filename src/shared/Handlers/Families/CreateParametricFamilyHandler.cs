@@ -1,12 +1,15 @@
-#if REVIT2027
 using System;
+using System.IO;
+#if REVIT2027
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.Linq;
+using FamilyItemFactory = Autodesk.Revit.Creation.FamilyItemFactory;
+#endif
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
+
 
 namespace RvtMcp.Plugin.Handlers
 {
@@ -20,7 +23,12 @@ namespace RvtMcp.Plugin.Handlers
         private const string Scope = "type";
         public string Name => "create_parametric_family";
         public string Description => "Revit 2027: create a new .rfa containing one parameter-driven rectangular extrusion; never overwrites a file.";
-        public string ParametersSchema => @"{
+        public string ParametersSchema
+        {
+            get
+            {
+#if REVIT2027
+                return @"{
   ""type"": ""object"",
   ""required"": [""family_name"", ""template_path"", ""output_path"", ""length_mm"", ""width_mm"", ""height_mm""],
   ""properties"": {
@@ -36,9 +44,17 @@ namespace RvtMcp.Plugin.Handlers
     ""timeout_seconds"": {""type"": ""integer"", ""minimum"": 1, ""maximum"": 900}
   }
 }";
+#else
+                return @"{""type"":""object""}";
+#endif
+            }
+        }
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
+#if !REVIT2027
+            return CommandResult.Fail("UNSUPPORTED_VERSION: create_parametric_family requires Revit 2027. This Revit version was not changed and no file was written.");
+#else
             JObject request;
             try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
             catch (Exception ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
@@ -61,13 +77,17 @@ namespace RvtMcp.Plugin.Handlers
             outputPath = Path.GetFullPath(outputPath);
             var temporaryPath = ParametricFamilyInput.TemporaryOutputPath(outputPath);
             Document familyDoc = null;
+            var closed = false;
+            var closeAttempted = false;
             var saved = false;
             var closeError = (string)null;
             CommandResult outcome;
+            var stage = "opening the family template";
             try
             {
                 // NewFamilyDocument must be called by the add-in on Revit's UI thread.
                 familyDoc = app.Application.NewFamilyDocument(templatePath);
+                stage = "creating the native extrusion and parameter constraints";
                 if (familyDoc == null || !familyDoc.IsFamilyDocument)
                     throw new InvalidOperationException("Revit did not open the supplied template as a family document.");
 
@@ -79,23 +99,29 @@ namespace RvtMcp.Plugin.Handlers
                         throw new InvalidOperationException("Could not start the family creation transaction.");
                     try
                     {
+                        stage = "creating the native extrusion and parameter constraints";
                         var manager = familyDoc.FamilyManager;
+                        if (manager == null) throw new InvalidOperationException("The family template does not expose a FamilyManager.");
+                        stage = "selecting family type and creating Length, Width, Height parameters";
+                        var familyType = SelectType(manager, typeName);
                         var parameters = CreateParameters(manager);
-                        var familyType = manager.NewType(typeName);
-                        if (familyType == null) throw new InvalidOperationException("Revit could not create the requested family type.");
-                        manager.CurrentType = familyType;
                         SetValues(manager, parameters, dimensions);
 
-                        // Ref. Level is the native XY work plane in a generic-model family template.
-                        var level = new FilteredElementCollector(familyDoc).OfClass(typeof(Level)).Cast<Level>().FirstOrDefault();
-                        if (level == null) throw new InvalidOperationException("The family template has no reference level for the extrusion sketch.");
-                        var plane = CreateWorkPlane(familyDoc, level);
+                        stage = "creating the extrusion sketch";
+                        var plan = SelectFamilyPlan(familyDoc);
+                        var plane = CreateWorkPlane(familyDoc);
                         var extrusion = CreateExtrusion(familyDoc, plane, dimensions);
                         if (extrusion == null) throw new InvalidOperationException("Revit did not create the extrusion.");
+                        var start = extrusion.get_Parameter(BuiltInParameter.EXTRUSION_START_PARAM);
+                        if (start == null || Math.Abs(start.AsDouble()) > 1e-8)
+                            throw new InvalidOperationException("The extrusion did not start at the work-plane origin (zero).");
 
-                        var constraints = AssociateExtrusionParameters(familyDoc, manager, parameters, extrusion, dimensions);
+                        stage = "associating extrusion and labelled dimensions";
+                        var constraints = AssociateExtrusionParameters(familyDoc, manager, parameters, extrusion, dimensions, ref stage);
+                        stage = "regenerating and reading back native geometry";
                         familyDoc.Regenerate();
                         familyData = ReadBack(familyDoc, manager, parameters, extrusion, constraints, familyName, typeName, dimensions);
+                        stage = "committing the family creation transaction";
                         if (transaction.Commit() != TransactionStatus.Committed)
                             throw new InvalidOperationException("Revit did not commit the family creation transaction.");
                     }
@@ -108,10 +134,16 @@ namespace RvtMcp.Plugin.Handlers
 
                 if (File.Exists(outputPath)) // A second guard immediately before the native save.
                     throw new IOException("output_path already exists. This tool never overwrites an existing .rfa file.");
+                stage = "saving the temporary family";
                 // Save only a uniquely named temporary .rfa. The final same-volume rename is
                 // atomic and non-overwriting on Windows; failures can safely delete our own temp file.
                 familyDoc.SaveAs(temporaryPath, new SaveAsOptions { OverwriteExistingFile = false });
                 if (!File.Exists(temporaryPath)) throw new IOException("Revit did not create the temporary family file.");
+                closeAttempted = true;
+                if (!familyDoc.Close(false)) throw new IOException("Revit did not close the temporary family document.");
+                familyDoc = null;
+                closed = true;
+                stage = "renaming the temporary family to output_path";
                 File.Move(temporaryPath, outputPath);
                 saved = true;
                 var result = JObject.FromObject(familyData);
@@ -121,47 +153,67 @@ namespace RvtMcp.Plugin.Handlers
                 result["file_size_bytes"] = new FileInfo(outputPath).Length;
                 result["host_verification"] = "in_revit_2027";
                 outcome = CommandResult.Ok(result);
-                familyDoc.Close(false);
-                familyDoc = null;
             }
             catch (Exception ex)
             {
                 if (saved)
                 {
-                    // Native SaveAs succeeded but a later read failed: do not misreport it as no file.
+                    // The final rename succeeded but a later read failed: do not misreport it as no file.
                     outcome = CommandResult.Fail("The family file was saved, but its response could not be completed. Inspect output_path before retrying: " + ex.Message);
-                }
-                else if (File.Exists(temporaryPath))
-                {
-                    // Native SaveAs succeeded but the final non-overwriting rename did not.
-                    // Close first: Windows can retain a document handle on the temporary file.
-                    try { familyDoc.Close(false); }
-                    catch (Exception closeException)
-                    {
-                        return CommandResult.Fail("Family creation failed and the family document could not be closed. "
-                            + "The temporary file may remain at " + temporaryPath + "; the requested output was not written. " + closeException.Message);
-                    }
-                    familyDoc = null;
-                    var cleanupError = ParametricFamilyInput.DeleteTemporaryFile(temporaryPath);
-                    outcome = CommandResult.Fail("Family creation failed; the family document was closed without saving to output_path. "
-                        + (cleanupError == null ? "No output file was left behind. " : cleanupError + " ") + ex.Message);
                 }
                 else
                 {
-                    outcome = CommandResult.Fail("Family creation failed; the family document was closed without saving to output_path. " + ex.Message);
+                    if (!closed && !closeAttempted && familyDoc != null)
+                    {
+                        closeAttempted = true;
+                        try
+                        {
+                            closed = familyDoc.Close(false);
+                            if (!closed) closeError = "Revit returned false when closing the family document.";
+                        }
+                        catch (Exception closeException) { closeError = closeException.Message; }
+                    }
+                    var cleanupError = closed || familyDoc == null
+                        ? ParametricFamilyInput.DeleteTemporaryFile(temporaryPath)
+                        : "The family document did not close; its temporary file was retained for inspection at " + temporaryPath + ".";
+                    outcome = CommandResult.Fail("Family creation failed; no requested output file was written. "
+                        + (closed ? "The family document was closed without saving to output_path. "
+                            : familyDoc == null ? "No family document was opened or it was already closed. "
+                            : "The family document could not be closed. ")
+                        + (cleanupError == null ? "No temporary or output file was left behind. " : cleanupError + " ")
+                        + (closeError == null ? "" : closeError + " ") + "Failure stage: " + stage + ". " + ex.Message);
                 }
             }
-            if (familyDoc != null)
+            if (!closed && !closeAttempted && familyDoc != null)
             {
-                try { familyDoc.Close(false); }
+                try
+                {
+                    closeAttempted = true;
+                    if (!familyDoc.Close(false)) closeError = "Revit returned false when closing the family document.";
+                }
                 catch (Exception closeException) { closeError = closeException.Message; }
             }
-            if (closeError != null)
-                return CommandResult.Fail((saved
-                    ? "The family was saved, but the temporary family document could not be closed. Inspect Revit and output_path before retrying. "
-                    : "Family creation failed; the family document could not be closed without saving to output_path. Inspect output_path and the reported temporary file, if any. ")
-                    + closeError);
+            if (saved && closeError != null)
+                return CommandResult.Fail("The family was saved, but the temporary family document could not be closed. Inspect Revit and output_path before retrying. " + closeError);
             return outcome;
+#endif
+        }
+
+#if REVIT2027
+
+        private static FamilyType SelectType(FamilyManager manager, string typeName)
+        {
+            var existing = manager.Types.Cast<FamilyType>().FirstOrDefault(t => t.Name == typeName);
+            if (existing != null)
+            {
+                manager.CurrentType = existing;
+                return existing;
+            }
+            var created = manager.NewType(typeName); // NewType also selects the type when CurrentType was null.
+            if (created == null || manager.CurrentType == null)
+                throw new InvalidOperationException("Revit could not create and select the requested family type.");
+            manager.CurrentType = created;
+            return created;
         }
 
         private static Dictionary<string, FamilyParameter> CreateParameters(FamilyManager manager)
@@ -170,10 +222,14 @@ namespace RvtMcp.Plugin.Handlers
             var result = new Dictionary<string, FamilyParameter>(StringComparer.Ordinal);
             for (var i = 0; i < names.Length; i++)
             {
-                var parameter = manager.AddParameter(names[i], GroupTypeId.Geometry, SpecTypeId.Length, false);
-                if (parameter == null) throw new InvalidOperationException("Could not add family parameter " + names[i] + ".");
-                if (manager.CurrentType.AsDouble(parameter) == null)
-                    throw new InvalidOperationException("Family parameter " + names[i] + " did not expose a numeric length value.");
+                var existing = manager.GetParameters().FirstOrDefault(p => p.Definition.Name == names[i]);
+                if (existing != null && (existing.IsInstance || existing.StorageType != StorageType.Double
+                    || existing.GetUnitTypeId() != SpecTypeId.Length
+                    || existing.Formula != null || existing.AssociatedParameters.Size != 0))
+                    throw new InvalidOperationException("The family template has an incompatible or already-used parameter named " + names[i] + ".");
+                var parameter = existing ?? manager.AddParameter(names[i], GroupTypeId.Geometry, SpecTypeId.Length, false);
+                if (parameter == null || manager.CurrentType.AsDouble(parameter) == null)
+                    throw new InvalidOperationException("Family parameter " + names[i] + " did not expose a numeric length value on the selected type.");
                 result.Add(names[i], parameter);
             }
             return result;
@@ -186,11 +242,23 @@ namespace RvtMcp.Plugin.Handlers
             manager.Set(parameters["Height"], ParametricFamilyInput.ToRevitFeet(values[2]));
         }
 
-        private static SketchPlane CreateWorkPlane(Document doc, Level level)
+        private static ViewPlan SelectFamilyPlan(Document doc)
         {
-            var sketchPlane = SketchPlane.Create(doc, level.Id);
-            if (sketchPlane == null) throw new InvalidOperationException("Could not create the extrusion work plane on the reference level.");
-            return sketchPlane;
+            var plan = new FilteredElementCollector(doc).OfClass(typeof(ViewPlan)).Cast<ViewPlan>()
+                .FirstOrDefault(v => !v.IsTemplate && v.ViewType == ViewType.FloorPlan
+                    && v.GenLevel != null && Math.Abs(v.GenLevel.Elevation) <= 1e-8);
+            if (plan == null)
+                throw new InvalidOperationException("Use a standard 3D family template with a floor plan at zero elevation; this tool does not support annotation, massing or specialized family templates.");
+            return plan;
+        }
+
+        private static SketchPlane CreateWorkPlane(Document doc)
+        {
+            // A Plane overload at the family origin avoids Level.Elevation changing the solid base.
+            // NewExtrusion uses the plane's +Z normal; EXTRUSION_START remains zero.
+            var plane = SketchPlane.Create(doc, Plane.CreateByOriginAndBasis(XYZ.Zero, XYZ.BasisX, XYZ.BasisY));
+            if (plane == null) throw new InvalidOperationException("Could not create the extrusion work plane at the family origin.");
+            return plane;
         }
 
         private static Extrusion CreateExtrusion(Document doc, SketchPlane plane, double[] dimensions)
@@ -217,22 +285,24 @@ namespace RvtMcp.Plugin.Handlers
         private sealed class ConstraintSet
         {
             internal readonly List<Dimension> Dimensions = new List<Dimension>();
-            internal readonly List<Dimension> Alignments = new List<Dimension>();
+            internal readonly List<Dimension> Equalities = new List<Dimension>();
+            internal readonly List<ElementId> Alignments = new List<ElementId>();
         }
 
         private static ConstraintSet AssociateExtrusionParameters(Document doc, FamilyManager manager,
-            IReadOnlyDictionary<string, FamilyParameter> parameters, Extrusion extrusion, double[] dimensions)
+            IReadOnlyDictionary<string, FamilyParameter> parameters, Extrusion extrusion, double[] dimensions, ref string stage)
         {
+            stage = "associating extrusion Height";
             var end = extrusion.get_Parameter(BuiltInParameter.EXTRUSION_END_PARAM);
             if (end == null || end.IsReadOnly) throw new InvalidOperationException("The extrusion end parameter is unavailable or read-only.");
             manager.AssociateElementParameterToFamilyParameter(end, parameters["Height"]);
 
-            // Align each profile edge to a named reference plane, then lock the alignment.
-            // The dimensions labelled Length/Width constrain the opposing reference planes.
-            var views = new FilteredElementCollector(doc).OfClass(typeof(ViewPlan)).Cast<ViewPlan>()
-                .Where(v => !v.IsTemplate && v.ViewType == ViewType.FloorPlan).ToArray();
-            var plan = views.FirstOrDefault() ?? throw new InvalidOperationException("The family template has no floor-plan view for dimensional constraints.");
+            // Align only after native model-curve references exist; the geometry is already aligned.
+            var plan = SelectFamilyPlan(doc);
+            stage = "creating labelled Length and Width dimensions and origin EQ constraints";
             var constraints = CreateNamedPlanes(doc, plan, parameters, dimensions);
+            doc.Regenerate();
+            stage = "locking native ModelCurve profile edges to reference planes";
             constraints.Alignments.AddRange(CreateExtrusionProfileConstraints(doc, plan, extrusion));
             return constraints;
         }
@@ -258,7 +328,35 @@ namespace RvtMcp.Plugin.Handlers
             var constraints = new ConstraintSet();
             constraints.Dimensions.Add(dimension);
             constraints.Dimensions.Add(width);
+            constraints.Equalities.Add(CreateOriginEquality(doc, factory, plan, left, right,
+                Line.CreateBound(new XYZ(-halfLength, 0, 0), new XYZ(halfLength, 0, 0)), true));
+            constraints.Equalities.Add(CreateOriginEquality(doc, factory, plan, back, front,
+                Line.CreateBound(new XYZ(0, -halfWidth, 0), new XYZ(0, halfWidth, 0)), false));
             return constraints;
+        }
+
+        private static Dimension CreateOriginEquality(Document doc, FamilyItemFactory factory, ViewPlan plan,
+            ReferencePlane first, ReferencePlane second, Line line, bool vertical)
+        {
+            var origin = new FilteredElementCollector(doc).OfClass(typeof(ReferencePlane))
+                .Cast<ReferencePlane>().FirstOrDefault(p =>
+                {
+                    var plane = p.GetPlane();
+                    var center = vertical ? plane.Origin.X : plane.Origin.Y;
+                    var normal = vertical ? plane.Normal.Y : plane.Normal.X;
+                    return Math.Abs(center) <= 1e-8 && Math.Abs(normal) <= 1e-8;
+                });
+            if (origin == null)
+                throw new InvalidOperationException("The family template must contain both center reference planes at the origin, as in a standard 3D family template.");
+            var references = new ReferenceArray();
+            references.Append(first.GetReference());
+            references.Append(origin.GetReference());
+            references.Append(second.GetReference());
+            var dimension = factory.NewDimension(plan, line, references);
+            dimension.AreSegmentsEqual = true;
+            if (!dimension.AreSegmentsEqual)
+                throw new InvalidOperationException("Revit did not create a persistent EQ constraint about the family origin.");
+            return dimension;
         }
 
         private static ReferenceArray RefArray(ReferencePlane first, ReferencePlane second)
@@ -269,29 +367,38 @@ namespace RvtMcp.Plugin.Handlers
             return result;
         }
 
-        private static List<Dimension> CreateExtrusionProfileConstraints(Document doc, ViewPlan plan, Extrusion extrusion)
+        private static List<ElementId> CreateExtrusionProfileConstraints(Document doc, ViewPlan plan, Extrusion extrusion)
         {
-            // Native profile curve references are used rather than coincident XYZ coordinates.
             if (extrusion.Sketch == null) throw new InvalidOperationException("The native extrusion did not expose its editable sketch.");
-            var edges = extrusion.Sketch.Profile.Cast<CurveArray>().SelectMany(loop => loop.Cast<Curve>())
-                .OfType<Line>().Where(line => line.Reference != null).ToArray();
-            if (edges.Length != 4) throw new InvalidOperationException("The native extrusion profile must contain exactly four line references.");
+            // GetAllElements identifies the native ModelCurves belonging to the sketch. Reading
+            // GeometryCurve from each element avoids relying on Sketch.Profile wrapper references.
+            var curves = extrusion.Sketch.GetAllElements().Select(doc.GetElement).OfType<ModelCurve>()
+                .Select(c => new { Curve = c.GeometryCurve as Line, Reference = c.GeometryCurve.Reference })
+                .Where(c => c.Curve != null && c.Reference != null).ToArray();
+            if (curves.Length != 4) throw new InvalidOperationException("The regenerated native extrusion did not expose exactly four referenceable ModelCurve lines.");
             var planes = new FilteredElementCollector(doc).OfClass(typeof(ReferencePlane)).Cast<ReferencePlane>().ToArray();
-            var alignments = new List<Dimension>();
-            foreach (var edge in edges)
+            var alignments = new List<ElementId>();
+            foreach (var edge in curves)
             {
-                var direction = edge.Direction;
+                var direction = edge.Curve.Direction;
                 var vertical = Math.Abs(direction.Y) > 0.9;
-                var midpoint = edge.GetEndPoint(0).Add(edge.GetEndPoint(1)).Multiply(0.5);
+                var midpoint = edge.Curve.GetEndPoint(0).Add(edge.Curve.GetEndPoint(1)).Multiply(0.5);
                 var name = vertical ? (midpoint.X > 0 ? "RvtMcp Right" : "RvtMcp Left")
                     : (midpoint.Y > 0 ? "RvtMcp Front" : "RvtMcp Back");
                 var plane = planes.First(p => p.Name == name);
                 var alignment = doc.FamilyCreate.NewAlignment(plan, plane.GetReference(), edge.Reference);
                 if (alignment == null) throw new InvalidOperationException("Could not align the extrusion profile to " + name + ".");
-                if (!alignment.IsLocked) alignment.IsLocked = true;
-                alignments.Add(alignment);
+                alignments.Add(alignment.Id); // NewAlignment returns a locked Dimension.
             }
+            doc.Regenerate();
             return alignments;
+        }
+
+        private static bool IsFamilyParameter(FamilyParameter actual, FamilyParameter expected)
+        {
+            // Revit may return a new Parameter wrapper on every API access. Compare stable identity.
+            return actual != null && expected != null
+                && RevitCompat.GetId(actual.Id) == RevitCompat.GetId(expected.Id) && actual.Definition.Name == expected.Definition.Name;
         }
 
         private static object ReadBack(Document doc, FamilyManager manager,
@@ -303,9 +410,9 @@ namespace RvtMcp.Plugin.Handlers
             var end = extrusion.get_Parameter(BuiltInParameter.EXTRUSION_END_PARAM);
             var associated = new[]
             {
-                constraints.Dimensions.SingleOrDefault(d => d.FamilyLabel != null && d.FamilyLabel.Id == parameters["Length"].Id) != null,
-                constraints.Dimensions.SingleOrDefault(d => d.FamilyLabel != null && d.FamilyLabel.Id == parameters["Width"].Id) != null,
-                end != null && parameters["Height"].AssociatedParameters.Cast<Parameter>().Any(p => ReferenceEquals(p, end))
+                constraints.Dimensions.SingleOrDefault(d => d.FamilyLabel != null && IsFamilyParameter(d.FamilyLabel, parameters["Length"])) != null,
+                constraints.Dimensions.SingleOrDefault(d => d.FamilyLabel != null && IsFamilyParameter(d.FamilyLabel, parameters["Width"])) != null,
+                end != null && IsFamilyParameter(manager.GetAssociatedFamilyParameter(end), parameters["Height"])
             };
             for (var i = 0; i < names.Length; i++)
             {
@@ -319,8 +426,10 @@ namespace RvtMcp.Plugin.Handlers
                     requested_mm = dimensions[i], associated = associated[i]
                 });
             }
-            if (constraints.Dimensions.Count != 2 || constraints.Alignments.Count != 4 || constraints.Alignments.Any(a => !a.IsLocked))
-                throw new InvalidOperationException("Native constraint read-back did not find two labelled dimensions and four locked alignments.");
+            var alignmentCount = constraints.Alignments.Select(doc.GetElement).OfType<Dimension>().Count(a => a.IsLocked);
+            if (constraints.Dimensions.Count != 2 || alignmentCount != 4
+                || constraints.Equalities.Count != 2 || constraints.Equalities.Any(d => !d.AreSegmentsEqual))
+                throw new InvalidOperationException("Native constraint read-back did not find two labelled dimensions, two origin EQ constraints and four locked alignments.");
             var solidCount = extrusion.get_Geometry(new Options()).OfType<Solid>().Count(s => s.Volume > 0);
             if (solidCount == 0) throw new InvalidOperationException("The regenerated extrusion has no positive-volume solid.");
             var namedPlanes = new FilteredElementCollector(doc).OfClass(typeof(ReferencePlane)).Cast<ReferencePlane>()
@@ -341,12 +450,12 @@ namespace RvtMcp.Plugin.Handlers
                 {
                     extrusion_id = RevitCompat.GetId(extrusion.Id).ToString(CultureInfo.InvariantCulture), solid_count = solidCount,
                     reference_plane_count = namedPlanes, labelled_dimension_count = constraints.Dimensions.Count,
-                    locked_alignment_count = constraints.Alignments.Count(a => a.IsLocked),
+                    origin_equality_count = constraints.Equalities.Count, locked_alignment_count = alignmentCount,
                     bounding_box_mm = new { length = actual[0], width = actual[1], height = actual[2] },
                     dimensions_match = matches.All(m => m)
                 }
             };
         }
+#endif
     }
 }
-#endif

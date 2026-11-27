@@ -2002,7 +2002,7 @@
     },
     {
       "name": "revit_create_parametric_family",
-      "description_hash": "sha256:f71b5f237ba8a8d31c879829476229a02d0e452a1950ef0505c9df5c08ce0060",
+      "description_hash": "sha256:d3f6766c6aa56ae05ae191069009436e2e9f224756526058c61e4f65700830c7",
       "inputSchema": {
         "properties": {
           "familyName": {

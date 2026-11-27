@@ -48,5 +48,25 @@ namespace RvtMcp.Tests
                 Assert.Contains("MCP client", rejection);
             }
         }
+        [Theory]
+        [InlineData(null, null)]
+        [InlineData(null, "doc-a")]
+        [InlineData("doc-a", "doc-b")]
+        public void Independent_family_authoring_uses_confirmed_target_not_project_document(
+            string expected, string actual)
+        {
+            Assert.Null(ToolReadPolicy.DocumentRejection("create_parametric_family", expected, actual));
+            Assert.Null(ToolReadPolicy.DocumentRejection("CREATE_PARAMETRIC_FAMILY", expected, actual, true));
+            Assert.StartsWith("PAIRING_REQUIRED:", ToolReadPolicy.DocumentRejection("create_parametric_family", null, actual, false));
+            Assert.Null(ToolReadPolicy.DocumentRejection("create_parametric_family", "doc-a", actual, false));
+            Assert.Contains("READ_ONLY", ToolReadPolicy.Rejection("create_parametric_family", true, true));
+        }
+
+        [Fact]
+        public void Ordinary_writes_still_reject_unconfirmed_or_changed_documents()
+        {
+            Assert.Contains("DOCUMENT_UNCONFIRMED", ToolReadPolicy.DocumentRejection("create_level", null, null));
+            Assert.Contains("DOCUMENT_CHANGED", ToolReadPolicy.DocumentRejection("create_level", "doc-a", "doc-b"));
+        }
     }
 }

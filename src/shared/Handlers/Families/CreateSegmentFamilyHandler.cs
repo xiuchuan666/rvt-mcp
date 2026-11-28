@@ -420,14 +420,27 @@ namespace RvtMcp.Plugin.Handlers
             if (box == null) throw new InvalidOperationException("The extrusion has no geometry bounding box after regeneration.");
             var actual = new[] { box.Max.X - box.Min.X, box.Max.Y - box.Min.Y, box.Max.Z - box.Min.Z }.Select(SegmentFamilyInput.MillimetersFromFeet).ToArray();
             var expected = SegmentFamilyInput.ExpectedBoundingBoxMm(requested[0], requested[1], requested[2], requested[3]);
-            // Revit stores lengths in feet, so a millimetre-sized arc coordinate round-trips with
-            // sub-millimetre error (observed ~1.5mm on a 14m outer diameter). 0.01mm is below the
-            // achievable precision; 1.0mm absorbs the imperial round-trip while still catching real
-            // geometry mistakes on a large tunnel segment.
-            const double bboxToleranceMm = 1.0;
-            var matches = actual.Zip(expected, (a, e) => Math.Abs(a - e) <= bboxToleranceMm).ToArray();
+            // Precise geometry proof: total solid volume matches the exact annular-sector volume.
+            // Solid.Volume is exact (cubic feet) and, unlike the bounding box, is not affected by
+            // Revit's chordal discretisation of arcs (which under-reports the arc-apex X extent).
+            var volumeMm3 = solids.Sum(s => s.Volume) * Math.Pow(304.8, 3);
+            var expectedVolumeMm3 = SegmentFamilyInput.ExpectedVolumeMm3(requested[0], requested[1], requested[2], requested[3]);
+            var volumeMatches = Math.Abs(volumeMm3 - expectedVolumeMm3) <= expectedVolumeMm3 * 0.005; // 0.5% — absorbs feet rounding on a ~5m³ segment
+            if (!volumeMatches) throw new InvalidOperationException(
+                $"Regenerated arc extrusion volume does not match the analytic annular-sector volume within 0.5%. actual={volumeMm3:F0} mm³, expected={expectedVolumeMm3:F0} mm³.");
+            // Bounding box: Y (chord) and Z (ring width) use exact endpoints and match to 1mm.
+            // X spans the arc apex, which Revit's bbox under-reports by its chord discretisation, so
+            // X is only sanity-checked to a chord-aware tolerance rather than an exact match.
+            const double flatToleranceMm = 1.0;
+            var arcApexAllowanceMm = requested[0] * 0.5 * 0.0003 + 1.0; // ~R*(1-cos(seg)) for the default ~2.4° arc segment
+            var matches = new[]
+            {
+                Math.Abs(actual[0] - expected[0]) <= arcApexAllowanceMm,
+                Math.Abs(actual[1] - expected[1]) <= flatToleranceMm,
+                Math.Abs(actual[2] - expected[2]) <= flatToleranceMm
+            };
             if (matches.Any(m => !m)) throw new InvalidOperationException(
-                $"Regenerated arc extrusion bounding box does not match the analytic annular-sector bounds within {bboxToleranceMm} mm. "
+                "Regenerated arc extrusion bounding box is inconsistent with the annular-sector geometry. "
                 + $"actual_mm=[{actual[0]:F3}, {actual[1]:F3}, {actual[2]:F3}] (Min=({box.Min.X:F4},{box.Min.Y:F4},{box.Min.Z:F4}) Max=({box.Max.X:F4},{box.Max.Y:F4},{box.Max.Z:F4})) "
                 + $"expected_mm=[{expected[0]:F3}, {expected[1]:F3}, {expected[2]:F3}].");
             return new
@@ -436,7 +449,8 @@ namespace RvtMcp.Plugin.Handlers
                 geometry = new { extrusion_id = RevitCompat.GetId(extrusion.Id).ToString(CultureInfo.InvariantCulture), solid_count = solids.Length, reference_arc_count = referenceArcs.Length,
                     radial_reference_count = radialReferences.Length, origin_dimension_count = 0, centre_constraint = "pending_hosted_plan_a_flex", labelled_dimension_count = associated.Count(a => a), profile_alignment_count = alignments.Length,
                     locked_alignment_count = alignments.Count(SafeIsLocked), bounding_box_mm = new { x = actual[0], y = actual[1], z = actual[2] },
-                    expected_bounding_box_mm = new { x = expected[0], y = expected[1], z = expected[2] }, dimensions_match = matches.All(m => m), bounding_box_tolerance_mm = bboxToleranceMm }
+                    expected_bounding_box_mm = new { x = expected[0], y = expected[1], z = expected[2] }, dimensions_match = matches.All(m => m),
+                    volume_mm3 = Math.Round(volumeMm3, 0), expected_volume_mm3 = Math.Round(expectedVolumeMm3, 0), volume_matches = volumeMatches }
             };
         }
 #endif

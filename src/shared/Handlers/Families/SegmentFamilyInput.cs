@@ -52,6 +52,18 @@ namespace RvtMcp.Plugin.Handlers
         }
 
         internal static double MillimetersFromFeet(double feet) => ParametricFamilyInput.MillimetersFromFeet(feet);
+
+        /// <summary>Exact annular-sector volume in cubic millimetres (outer sector minus inner sector, times ring width).
+        /// Unlike the bounding box, this does not depend on Revit's chordal arc discretisation.</summary>
+        internal static double ExpectedVolumeMm3(double outerDiameterMm, double thicknessMm, double ringWidthMm, double angleDegrees)
+        {
+            var outer = outerDiameterMm * 0.5;
+            var inner = outer - thicknessMm;
+            var sweep = angleDegrees * Math.PI / 180.0; // full central angle in radians
+            var area = sweep * 0.5 * (outer * outer - inner * inner);
+            return area * ringWidthMm;
+        }
+
         internal static double DegreesFromRadians(double radians) => radians * DegreesPerRadian;
         internal static double ToRevitFeet(double mm) => ParametricFamilyInput.ToRevitFeet(mm);
         internal static string TemporaryOutputPath(string path) => ParametricFamilyInput.TemporaryOutputPath(path);

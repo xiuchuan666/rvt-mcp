@@ -120,7 +120,6 @@ namespace RvtMcp.Plugin.Handlers
                     ModelCurve outerReference, innerReference;
                     Dimension outerRadius, innerRadius, angular;
                     ModelCurve negativeLine, positiveLine;
-                    var originDimensions = new List<Dimension>();
                     stage = "Tx2: creating arc skeleton and native driving dimensions";
                     using (var tx = new Transaction(familyDoc, "RvtMcp segment Tx2: arc skeleton and dimensions"))
                     {
@@ -140,17 +139,10 @@ namespace RvtMcp.Plugin.Handlers
                             familyDoc.Regenerate();
                             if (outerReference?.GeometryCurve?.Reference == null || innerReference?.GeometryCurve?.Reference == null)
                                 throw new InvalidOperationException("The reference arcs did not expose stable geometric references.");
-                            // Pin both arc centers to the template's origin planes. Radius and aperture alone
-                            // leave a translational degree of freedom that a later family flex could expose.
-                            var centerX = FindCenterPlane(familyDoc, "Center (Left/Right)");
-                            var centerY = FindCenterPlane(familyDoc, "Center (Front/Back)");
-                            var reach = Math.Max(outerFt, innerFt) + 1.0;
-                            originDimensions.Add(CreateOriginDimension(familyDoc, plan, centerY, outerReference, new XYZ(-reach, -reach, z0), new XYZ(reach, -reach, z0)));
-                            originDimensions.Add(CreateOriginDimension(familyDoc, plan, centerX, outerReference, new XYZ(-reach, -reach, z0), new XYZ(-reach, reach, z0)));
-                            originDimensions.Add(CreateOriginDimension(familyDoc, plan, centerY, innerReference, new XYZ(-reach, -reach - 0.5, z0), new XYZ(reach, -reach - 0.5, z0)));
-                            originDimensions.Add(CreateOriginDimension(familyDoc, plan, centerX, innerReference, new XYZ(-reach - 0.5, -reach, z0), new XYZ(-reach - 0.5, reach, z0)));
-                            familyDoc.Regenerate();
-            outerRadius = familyDoc.FamilyCreate.NewRadialDimension(plan, outerReference.GeometryCurve.Reference, new XYZ(outerFt, 0, z0));
+                            // Plan A: do not manufacture an arc-center reference. Curve endpoints only
+                            // expose indices 0 and 1. Radius/angular labels and the radial profile locks
+                            // are the candidate constraint scheme; hosted flex must verify center stability.
+                            outerRadius = familyDoc.FamilyCreate.NewRadialDimension(plan, outerReference.GeometryCurve.Reference, new XYZ(outerFt, 0, z0));
                             innerRadius = familyDoc.FamilyCreate.NewRadialDimension(plan, innerReference.GeometryCurve.Reference, new XYZ(innerFt, 0, z0));
                             familyDoc.Regenerate();
                             SetLabel(outerRadius, parameters["OuterRadius"], "OuterRadius");
@@ -184,8 +176,7 @@ namespace RvtMcp.Plugin.Handlers
                             familyDoc.Regenerate();
                             familyData = ReadBack(familyDoc, manager, parameters, extrusion, familyName, typeName,
                                 new[] { outerDiameter, thickness, ringWidth, angle },
-                                new[] { outerReference.Id, innerReference.Id }, new[] { negativeLine.Id, positiveLine.Id },
-                                originDimensions.Select(d => d.Id).ToArray(), profileAlignments);
+                                new[] { outerReference.Id, innerReference.Id }, new[] { negativeLine.Id, positiveLine.Id }, profileAlignments);
                             RequireCommit(tx, "Tx3");
                         }
                         catch { RollBack(tx); throw; }
@@ -303,24 +294,6 @@ namespace RvtMcp.Plugin.Handlers
             return result;
         }
 
-        private static ReferencePlane FindCenterPlane(Document doc, string name)
-        {
-            var plane = new FilteredElementCollector(doc).OfClass(typeof(ReferencePlane)).Cast<ReferencePlane>().FirstOrDefault(p => p.Name == name);
-            if (plane?.GetReference() == null) throw new InvalidOperationException("The family template must contain the standard origin reference plane: " + name + ".");
-            return plane;
-        }
-
-        private static Dimension CreateOriginDimension(Document doc, ViewPlan plan, ReferencePlane plane, ModelCurve arc, XYZ start, XYZ end)
-        {
-            var center = (arc.GeometryCurve as Arc)?.GetEndPointReference(2);
-            if (center == null) throw new InvalidOperationException("A reference arc did not expose its stable center-point reference.");
-            var refs = new ReferenceArray(); refs.Append(plane.GetReference()); refs.Append(center);
-            var dimension = doc.FamilyCreate.NewDimension(plan, Line.CreateBound(start, end), refs);
-            if (dimension == null) throw new InvalidOperationException("Revit could not pin a reference arc center to the origin.");
-            if (dimension.NumberOfSegments <= 1 && !dimension.IsLocked) dimension.IsLocked = true;
-            return dimension;
-        }
-
         private static void SetLabel(Dimension dimension, FamilyParameter parameter, string name)
         {
             if (dimension == null) throw new InvalidOperationException("Revit returned no native driving dimension for " + name + ".");
@@ -355,7 +328,7 @@ namespace RvtMcp.Plugin.Handlers
             foreach (var arc in sketchCurves.OfType<Arc>())
             {
                 var expected = referenceCurves.OfType<Arc>().Where(r => Math.Abs(r.Radius - arc.Radius) < 1e-6 && r.Center.DistanceTo(arc.Center) < 1e-6).ToList();
-                if (expected.Count != 1) throw new InvalidOperationException("The extrusion arc does not coincide with exactly one origin-pinned skeleton arc.");
+                if (expected.Count != 1) throw new InvalidOperationException("The extrusion arc does not coincide with exactly one skeleton arc.");
                 alignments.Add(LockAlignment(doc, plan, expected[0].Reference, arc.Reference, "arc profile"));
             }
             // Each radial side is constrained to the radial reference line nearest its midpoint.
@@ -403,12 +376,11 @@ namespace RvtMcp.Plugin.Handlers
 
         private static object ReadBack(Document doc, FamilyManager manager, IReadOnlyDictionary<string, FamilyParameter> parameters,
             Extrusion extrusion, string familyName, string typeName, double[] requested,
-            ElementId[] arcIds, ElementId[] radialIds, ElementId[] originIds, IReadOnlyList<Dimension> profileAlignments)
+            ElementId[] arcIds, ElementId[] radialIds, IReadOnlyList<Dimension> profileAlignments)
         {
             var dimensions = new FilteredElementCollector(doc).OfClass(typeof(Dimension)).Cast<Dimension>().ToList();
             var referenceArcs = LiveCurves<Arc>(doc, arcIds, "reference arc");
             var radialReferences = LiveCurves<Line>(doc, radialIds, "radial reference");
-            var originDimensions = LiveDimensions(dimensions, originIds, "arc-center origin");
             var alignments = LiveDimensions(dimensions, profileAlignments.Select(d => d.Id).ToArray(), "profile alignment");
             var associated = new[] { "OuterRadius", "InnerRadius", "SegmentAngle" }.Select(n => dimensions.Count(d => SameParameter(SafeFamilyLabel(d), parameters[n])) == 1).ToArray();
             if (associated.Any(a => !a)) throw new InvalidOperationException("A native radius or angle dimension is not associated with its derived family parameter.");
@@ -454,8 +426,8 @@ namespace RvtMcp.Plugin.Handlers
             {
                 family_name = familyName, document_title = doc.Title, family_type = typeName, native_editable = true, geometry_kind = "arc_extrusion", parameters = read,
                 geometry = new { extrusion_id = RevitCompat.GetId(extrusion.Id).ToString(CultureInfo.InvariantCulture), solid_count = solids.Length, reference_arc_count = referenceArcs.Length,
-                    radial_reference_count = radialReferences.Length, origin_dimension_count = originDimensions.Length, labelled_dimension_count = associated.Count(a => a), profile_alignment_count = alignments.Length,
-                    locked_alignment_count = originDimensions.Count(SafeIsLocked) + alignments.Count(SafeIsLocked), bounding_box_mm = new { x = actual[0], y = actual[1], z = actual[2] },
+                    radial_reference_count = radialReferences.Length, origin_dimension_count = 0, centre_constraint = "pending_hosted_plan_a_flex", labelled_dimension_count = associated.Count(a => a), profile_alignment_count = alignments.Length,
+                    locked_alignment_count = alignments.Count(SafeIsLocked), bounding_box_mm = new { x = actual[0], y = actual[1], z = actual[2] },
                     expected_bounding_box_mm = new { x = expected[0], y = expected[1], z = expected[2] }, dimensions_match = matches.All(m => m), bounding_box_tolerance_mm = 0.01 }
             };
         }

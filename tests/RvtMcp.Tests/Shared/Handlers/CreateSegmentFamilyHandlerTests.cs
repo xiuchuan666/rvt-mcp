@@ -39,10 +39,10 @@ public sealed class CreateSegmentFamilyHandlerTests
         Assert.Equal(1, d["geometry"]!.Value<int>("solid_count"));
         Assert.Equal(2, d["geometry"]!.Value<int>("reference_arc_count"));
         Assert.Equal(2, d["geometry"]!.Value<int>("radial_reference_count"));
-        Assert.Equal(4, d["geometry"]!.Value<int>("origin_dimension_count"));
+        Assert.Equal(0, d["geometry"]!.Value<int>("origin_dimension_count"));
         Assert.Equal(3, d["geometry"]!.Value<int>("labelled_dimension_count"));
         Assert.Equal(4, d["geometry"]!.Value<int>("profile_alignment_count"));
-        Assert.Equal(8, d["geometry"]!.Value<int>("locked_alignment_count"));
+        Assert.Equal(4, d["geometry"]!.Value<int>("locked_alignment_count"));
         Assert.True(d["geometry"]!.Value<bool>("dimensions_match"));
         Assert.Equal(3, r.Value<int>("transaction_commits"));
         Assert.Equal(4, r.Value<int>("profile_curves"));
@@ -100,6 +100,15 @@ public sealed class CreateSegmentFamilyHandlerTests
     }
 
     [Fact]
+    public void Curve_endpoint_reference_rejects_arc_center_index_like_native_revit()
+    {
+        var r = Probe.Value("endpoint_reference_contract");
+        Assert.True(r.Value<bool>("start_and_end_accepted"));
+        Assert.Equal("index", r.Value<string>("invalid_index_parameter"));
+        Assert.Contains("0 or 1", r.Value<string>("invalid_index_error"));
+    }
+
+    [Fact]
     public void Closed_document_releases_native_save_lock_before_non_overwriting_move()
     {
         var r = Probe.Value("success");
@@ -130,7 +139,7 @@ namespace Autodesk.Revit.DB {
  public class IntersectionResult { public XYZ XYZPoint; }
  public class Reference { public Curve Curve; public Reference(Curve c){Curve=c;} } public class ReferenceArray { public List<Reference> Items=new List<Reference>();public void Append(Reference r){Items.Add(r);} }
  public abstract class Curve { public Document Document; public XYZ Start,End; public string Kind; public double Radius; public XYZ Center; public double HalfAngle; public Reference Reference=>new Reference(this);
-  public XYZ GetEndPoint(int i)=>i==0?Start:End; public Reference GetEndPointReference(int i)=>new Reference(this); public double Length=>Kind=="line"?Start.DistanceTo(End):Radius*2*HalfAngle;
+  public XYZ GetEndPoint(int i)=>i==0?Start:End; public Reference GetEndPointReference(int i){if(i!=0&&i!=1)throw new ArgumentOutOfRangeException("index","Value must be either 0 or 1.");return new Reference(this);} public double Length=>Kind=="line"?Start.DistanceTo(End):Radius*2*HalfAngle;
   public IntersectionResult Project(XYZ p){var d=End-Start;var l=Math.Sqrt(d.X*d.X+d.Y*d.Y+d.Z*d.Z);var n=new XYZ(d.X/l,d.Y/l,d.Z/l);var q=new XYZ(Start.X+n.X*((p.X-Start.X)*n.X+(p.Y-Start.Y)*n.Y+(p.Z-Start.Z)*n.Z),Start.Y+n.Y*((p.X-Start.X)*n.X+(p.Y-Start.Y)*n.Y+(p.Z-Start.Z)*n.Z),Start.Z+n.Z*((p.X-Start.X)*n.X+(p.Y-Start.Y)*n.Y+(p.Z-Start.Z)*n.Z));return new IntersectionResult{XYZPoint=q};}
   public XYZ Evaluate(double t,bool normalized){if(Kind=="line")return new XYZ(Start.X+(End.X-Start.X)*t,Start.Y+(End.Y-Start.Y)*t,Start.Z);var a=-HalfAngle+2*HalfAngle*t;return new XYZ(Radius*Math.Cos(a),Radius*Math.Sin(a),Start.Z);} }
  public class Arc:Curve { public static Arc Create(XYZ center,double radius,double start,double end,XYZ x,XYZ y){var h=(end-start)/2;return new Arc{Center=center,Radius=radius,HalfAngle=h,Kind="arc",Start=P(radius,-h,center.Z),End=P(radius,h,center.Z)};}
@@ -187,7 +196,7 @@ namespace RvtMcp.Plugin { public interface IRevitCommand {} public class Command
 namespace RvtMcp.Plugin.Failures { public static class FailureControl { public class Scope { public void MarkPrivateFamilyDiscarded(){} }public static Scope Active=new Scope();public static IDisposable AuthorizeFamilySave(Autodesk.Revit.DB.Document d,string p){return null;}public static void ThrowIfStopped(){} } }
 public static class Probe { public static string Run(string scenario){Autodesk.Revit.DB.Document.Scenario=scenario;Autodesk.Revit.ApplicationServices.Application.Opens=0;var dir=Path.Combine(Path.GetTempPath(),"rvtmcp-segment-probe-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(dir);Autodesk.Revit.DB.Document doc=null;var temp=Path.Combine(dir,"result.rfa");try{
  var template=Path.Combine(dir,"template.rft");File.WriteAllText(template,"seam");if(scenario=="existing_output")File.WriteAllText(temp,"existing");var request=new JObject{["family_name"]="Jintang segment",["template_path"]=template,["output_path"]=temp,["outer_diameter_mm"]=14000,["thickness_mm"]=scenario=="invalid_thickness"?7000:600,["ring_width_mm"]=2000,["segment_angle_deg"]=scenario=="invalid_angle"?360:36};
- var app=new Autodesk.Revit.UI.UIApplication();var r=new RvtMcp.Plugin.Handlers.CreateSegmentFamilyHandler().Execute(app,request.ToString());doc=app.Application.Last;var arcs=doc?.Extrusion?.Sketch?.GetAllElements().Select(id=>((Autodesk.Revit.DB.ModelCurve)doc.GetElement(id)).GeometryCurve).OfType<Autodesk.Revit.DB.Arc>().ToArray();var bbox=doc?.Extrusion?.get_BoundingBox(null);doc?.Flex();
+ var app=new Autodesk.Revit.UI.UIApplication();if(scenario=="endpoint_reference_contract"){var arc=Autodesk.Revit.DB.Arc.Create(new Autodesk.Revit.DB.XYZ(0,0,0),10,-0.1,0.1,Autodesk.Revit.DB.XYZ.BasisX,Autodesk.Revit.DB.XYZ.BasisY);var accepted=arc.GetEndPointReference(0)!=null&&arc.GetEndPointReference(1)!=null;string parameter=null,error=null;try{arc.GetEndPointReference(2);}catch(ArgumentOutOfRangeException ex){parameter=ex.ParamName;error=ex.Message;}return new JObject{["start_and_end_accepted"]=accepted,["invalid_index_parameter"]=parameter,["invalid_index_error"]=error}.ToString();}var r=new RvtMcp.Plugin.Handlers.CreateSegmentFamilyHandler().Execute(app,request.ToString());doc=app.Application.Last;var arcs=doc?.Extrusion?.Sketch?.GetAllElements().Select(id=>((Autodesk.Revit.DB.ModelCurve)doc.GetElement(id)).GeometryCurve).OfType<Autodesk.Revit.DB.Arc>().ToArray();var bbox=doc?.Extrusion?.get_BoundingBox(null);doc?.Flex();
  return new JObject{["success"]=r.Success,["error"]=r.Error,["data"]=r.Data==null?null:JObject.FromObject(r.Data),["document_opens"]=Autodesk.Revit.ApplicationServices.Application.Opens,["document_closes"]=doc?.Closes??0,["transaction_commits"]=doc?.Commits??0,["output_exists"]=File.Exists(temp),["temporary_files"]=new JArray(Directory.GetFiles(dir,".rvtmcp-*.rfa")),["temporary_path_exists_after_move"]=Directory.GetFiles(dir,".rvtmcp-*.rfa").Any(),["save_lock_released_on_close"]=doc?.SaveLockReleasedOnClose??false,["profile_curves"]=doc?.Extrusion?.Sketch?.GetAllElements().Count()??0,["profile_arcs"]=arcs?.Length??0,["profile_lines"]=doc?.Extrusion?.Sketch?.GetAllElements().Select(id=>((Autodesk.Revit.DB.ModelCurve)doc.GetElement(id)).GeometryCurve).OfType<Autodesk.Revit.DB.Line>().Count()??0,["outer_radius_mm"]=arcs?.OrderByDescending(a=>a.Radius).First().Radius*304.8??0,["inner_radius_mm"]=arcs?.OrderBy(a=>a.Radius).First().Radius*304.8??0,["flex_applied"]=doc?.FlexApplied??false,["flex_changed_parameter"]=doc?.FlexChanged,["flex_geometry_changed"]=doc?.Extrusion==null?false:scenario=="flex_outer_diameter"?doc.Extrusion.get_BoundingBox(null).Max.X>bbox.Max.X:scenario=="flex_thickness"?Math.Abs(doc.Extrusion.Sketch.GetAllElements().Select(id=>((Autodesk.Revit.DB.ModelCurve)doc.GetElement(id)).GeometryCurve).OfType<Autodesk.Revit.DB.Arc>().Min(a=>a.Radius)*304.8-6300)<0.01:scenario=="flex_ring_width"?doc.Extrusion.Height*304.8>2400:doc.Extrusion.get_BoundingBox(null).Max.Y>bbox.Max.Y}.ToString();}finally{try{Directory.Delete(dir,true);}catch{}} } }
 """;
 }

@@ -74,6 +74,26 @@ public sealed class CreateParametricFamilyHandlerTests
         Assert.Empty(result["temporary_files"]!);
     }
 
+    [Fact]
+    public void Multi_segment_alignments_skip_the_forbidden_IsLocked_setter_and_keep_native_associations()
+    {
+        // A face alignment can join the already EQ-constrained plane network as a multi-segment
+        // linear dimension. Revit forbids its IsLocked setter; the existing EQ constraint remains.
+        var result = R27Probe.Value("alignment_multisegment");
+        Assert.True(result.Value<bool>("success"), result.Value<string>("error"));
+        var data = result["data"]!;
+        Assert.All(data["parameters"]!, parameter => Assert.True(parameter!.Value<bool>("associated")));
+        Assert.Equal(2, data["geometry"]!.Value<int>("labelled_dimension_count"));
+        Assert.Equal(2, data["geometry"]!.Value<int>("origin_equality_count"));
+        Assert.Equal(0, data["geometry"]!.Value<int>("locked_alignment_count"));
+        Assert.Equal(1200, data["geometry"]!["bounding_box_mm"]!.Value<double>("length"), 6);
+        Assert.Equal(600, data["geometry"]!["bounding_box_mm"]!.Value<double>("width"), 6);
+        Assert.Equal(900, data["geometry"]!["bounding_box_mm"]!.Value<double>("height"), 6);
+        Assert.True(data["geometry"]!.Value<bool>("dimensions_match"));
+        Assert.Equal(3, result.Value<int>("transaction_commits"));
+        Assert.Empty(result["temporary_files"]!);
+    }
+
     [Theory]
     [InlineData("geometry_failure", 0)]
     [InlineData("template_failure", 0)]
@@ -250,7 +270,8 @@ namespace Autodesk.Revit.Creation { public class FamilyItemFactory { public Auto
   var d=new Autodesk.Revit.DB.Dimension(Document,r.Items.Count); if(r.Items.Count==2)Document.Associations++; Document.Items.Add(d); return d; }
  public Autodesk.Revit.DB.Dimension NewAlignment(Autodesk.Revit.DB.ViewPlan v,Autodesk.Revit.DB.Reference a,Autodesk.Revit.DB.Reference b){
   if(a==null||b==null)throw new Exception("References must not be null.");
-  var d=new Autodesk.Revit.DB.Dimension(Document,2){IsLocked=true}; Document.Items.Add(d); return d; } } }
+  var references=Autodesk.Revit.DB.Document.Scenario=="alignment_multisegment"?3:2;
+  var d=new Autodesk.Revit.DB.Dimension(Document,references); if(references==2)d.IsLocked=true; Document.Items.Add(d); return d; } } }
 namespace Autodesk.Revit.DB {
  public enum TransactionStatus { Started,Committed,RolledBack }
  public enum ViewType { FloorPlan }
@@ -356,7 +377,11 @@ namespace Autodesk.Revit.DB {
    get { if(Document.Scenario=="alignment_familylabel_throws"&&IsLocked&&_familyLabel==null)
     throw new InvalidOperationException("This dimension can not be labeled."); return _familyLabel; }
    set { _familyLabel=value; } }
-  public bool IsLocked { get; set; } public bool Locked=>IsLocked; public bool AreSegmentsEqual;
+  private bool _isLocked;
+  public bool IsLocked {
+   get=>_isLocked;
+   set { if(NumberOfSegments>1)throw new InvalidOperationException("Cannot access this property if this dimension is linear shape with more than one segments."); _isLocked=value; } }
+  public bool Locked=>IsLocked; public bool AreSegmentsEqual;
   public double Value=4.0; public Parameter get_Parameter(BuiltInParameter p)=>new Parameter{IsReadOnly=false};
   public void SetLabel(FamilyParameter p){_familyLabel=p;} }
  public class FilteredElementCollector { private Document Doc; private Type RequestedType; public FilteredElementCollector(Document d){Doc=d;}

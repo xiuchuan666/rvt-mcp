@@ -185,7 +185,7 @@ namespace RvtMcp.Plugin.Handlers
                         {
                             // Diagnostic dump on failure
                             var diag = $"DimensionShape={lengthLabel.DimensionShape}, Segments={lengthLabel.NumberOfSegments}, "
-                                + $"IsLocked={lengthLabel.IsLocked}, Value={lengthLabel.Value}, Refs={lengthLabel.References.Size}, "
+                                + $"IsLocked={lengthLabel.IsLocked}, Value={(lengthLabel.NumberOfSegments <= 1 ? Convert.ToString(lengthLabel.Value, CultureInfo.InvariantCulture) : "n/a (multi-segment)")}, Refs={lengthLabel.References.Size}, "
                                 + $"DIM_LABEL_RO={lengthLabel.get_Parameter(BuiltInParameter.DIM_LABEL)?.IsReadOnly}, "
                                 + $"IsFamily={familyDoc.IsFamilyDocument}, IsReporting={parameters["Length"].IsReporting}, "
                                 + $"DataType={parameters["Length"].Definition.GetDataType()?.TypeId}";
@@ -197,7 +197,7 @@ namespace RvtMcp.Plugin.Handlers
                         if (widthLabel.FamilyLabel == null || widthLabel.FamilyLabel.Definition.Name != "Width")
                         {
                             var diag = $"DimensionShape={widthLabel.DimensionShape}, Segments={widthLabel.NumberOfSegments}, "
-                                + $"IsLocked={widthLabel.IsLocked}, Value={widthLabel.Value}, Refs={widthLabel.References.Size}, "
+                                + $"IsLocked={widthLabel.IsLocked}, Value={(widthLabel.NumberOfSegments <= 1 ? Convert.ToString(widthLabel.Value, CultureInfo.InvariantCulture) : "n/a (multi-segment)")}, Refs={widthLabel.References.Size}, "
                                 + $"DIM_LABEL_RO={widthLabel.get_Parameter(BuiltInParameter.DIM_LABEL)?.IsReadOnly}, "
                                 + $"IsFamily={familyDoc.IsFamilyDocument}, IsReporting={parameters["Width"].IsReporting}, "
                                 + $"DataType={parameters["Width"].Definition.GetDataType()?.TypeId}";
@@ -507,7 +507,21 @@ namespace RvtMcp.Plugin.Handlers
                 var alignment = doc.FamilyCreate.NewAlignment(plan, planeRef, face.Reference);
                 if (alignment == null)
                     throw new InvalidOperationException("NewAlignment returned null for face lock on " + planes[i].Name);
-                if (!alignment.IsLocked) alignment.IsLocked = true;
+
+                // A linear multi-segment alignment is already constrained by the EQ skeleton.
+                // Revit forbids setting IsLocked on it, so leave that native constraint intact.
+                var alignmentDescription = $"plane={planes[i].Name}, DimensionShape={alignment.DimensionShape}, Segments={alignment.NumberOfSegments}";
+                if (alignment.NumberOfSegments > 1) continue;
+                try
+                {
+                    if (!alignment.IsLocked) alignment.IsLocked = true;
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException("Failed to lock alignment (" + alignmentDescription + "): " + ex.Message, ex);
+                }
+                if (!alignment.IsLocked)
+                    throw new InvalidOperationException("Alignment was not locked after setting IsLocked (" + alignmentDescription + ").");
                 lockCount++;
             }
             return lockCount;

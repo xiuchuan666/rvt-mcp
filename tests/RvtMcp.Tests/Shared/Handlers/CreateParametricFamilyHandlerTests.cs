@@ -41,7 +41,7 @@ public sealed class CreateParametricFamilyHandlerTests
         Assert.True(result.Value<bool>("initial_type_was_null"));
         Assert.True(result.Value<bool>("new_parameter_wrappers"));
         Assert.Equal(3, result.Value<int>("labelled_dimensions_and_extrusion_associations")); // 2 dims + 1 extrusion param
-        Assert.Equal(4, result.Value<int>("locked_profile_alignments")); // 4 alignment locks
+        Assert.Equal(4, result.Value<int>("locked_profile_alignments")); // 4 face locks
         Assert.Equal(1200, data["geometry"]!["bounding_box_mm"]!.Value<double>("length"), 6);
         Assert.Equal(600, data["geometry"]!["bounding_box_mm"]!.Value<double>("width"), 6);
         Assert.Equal(900, data["geometry"]!["bounding_box_mm"]!.Value<double>("height"), 6);
@@ -49,9 +49,9 @@ public sealed class CreateParametricFamilyHandlerTests
         Assert.Equal(1, data["geometry"]!.Value<int>("solid_count"));
         Assert.Equal(4, data["geometry"]!.Value<int>("reference_plane_count"));
         Assert.Equal(2, data["geometry"]!.Value<int>("labelled_dimension_count"));
-        Assert.Equal(0, data["geometry"]!.Value<int>("origin_equality_count"));
+        Assert.Equal(2, data["geometry"]!.Value<int>("origin_equality_count")); // Length EQ + Width EQ
         Assert.Equal(4, data["geometry"]!.Value<int>("locked_alignment_count"));
-        Assert.Equal(1, result.Value<int>("transaction_commits"));
+        Assert.Equal(3, result.Value<int>("transaction_commits")); // Tx1 + Tx2 + Tx3
         Assert.Equal(1, result.Value<int>("document_closes"));
         Assert.Empty(result["temporary_files"]!);
     }
@@ -236,12 +236,15 @@ namespace Autodesk.Revit.Creation { public class FamilyItemFactory { public Auto
 namespace Autodesk.Revit.DB {
  public enum TransactionStatus { Started,Committed,RolledBack }
  public enum ViewType { FloorPlan }
- public enum BuiltInParameter { EXTRUSION_START_PARAM,EXTRUSION_END_PARAM }
+ public enum BuiltInParameter { EXTRUSION_START_PARAM,EXTRUSION_END_PARAM,DIM_LABEL }
  public enum StorageType { Double,String }
+ public enum DimensionShape { Linear,Angular }
  public class ElementId { public long Value; public ElementId(long id){Value=id;} }
  public class XYZ { public double X,Y,Z; public XYZ(double x,double y,double z){X=x;Y=y;Z=z;}
   public static XYZ Zero=new XYZ(0,0,0); public static XYZ BasisX=new XYZ(1,0,0); public static XYZ BasisY=new XYZ(0,1,0); public static XYZ BasisZ=new XYZ(0,0,1);
-  public XYZ Add(XYZ o)=>new XYZ(X+o.X,Y+o.Y,Z+o.Z); public XYZ Multiply(double n)=>new XYZ(X*n,Y*n,Z*n); }
+  public XYZ Add(XYZ o)=>new XYZ(X+o.X,Y+o.Y,Z+o.Z); public XYZ Multiply(double n)=>new XYZ(X*n,Y*n,Z*n);
+  public XYZ Negate()=>new XYZ(-X,-Y,-Z); public double DotProduct(XYZ o)=>X*o.X+Y*o.Y+Z*o.Z;
+  public static XYZ operator -(XYZ a,XYZ b)=>new XYZ(a.X-b.X,a.Y-b.Y,a.Z-b.Z); }
  public abstract class Curve { public XYZ A,B; public Reference NativeReference; public virtual Reference Reference=>null;
   public XYZ Direction=>new XYZ(B.X-A.X,B.Y-A.Y,B.Z-A.Z); public XYZ GetEndPoint(int i)=>i==0?A:B; }
  public class Line:Curve { public override Reference Reference=>NativeReference; public static Line CreateBound(XYZ a,XYZ b)=>new Line{A=a,B=b}; }
@@ -249,17 +252,21 @@ namespace Autodesk.Revit.DB {
   public IEnumerator<Curve> GetEnumerator()=>Items.GetEnumerator(); IEnumerator IEnumerable.GetEnumerator()=>GetEnumerator(); }
  public class CurveArrArray { public List<CurveArray> Items=new List<CurveArray>(); public void Append(CurveArray c){Items.Add(c);} }
  public static class GroupTypeId { public static object Geometry=new object(); }
- public static class SpecTypeId { public static object Length=new object(); }
+ public class ForgeTypeId { public string TypeId; public ForgeTypeId(string id){TypeId=id;} public bool NameEquals(ForgeTypeId o)=>TypeId==o?.TypeId; }
+ public static class SpecTypeId { public static ForgeTypeId Length=new ForgeTypeId("autodesk.spec.aec:length-1.0.0"); }
  public class Reference { public Curve Curve; public bool IsGeometric; public Reference(){} public Reference(Curve curve){Curve=curve;IsGeometric=true;} }
- public class ReferenceArray { public List<Reference> Items=new List<Reference>(); public void Append(Reference r){Items.Add(r);} }
- public class PlanarFace { public Reference Reference=new Reference{IsGeometric=true}; }
+ public class ReferenceArray { public List<Reference> Items=new List<Reference>(); public void Append(Reference r){Items.Add(r);} public int Size=>Items.Count; }
+ public class GeometryObject { public Document Document; }
+ public class Face:GeometryObject { public Reference Reference; }
+ public class PlanarFace:Face { public XYZ FaceNormal=new XYZ(0,0,1); public XYZ Origin=new XYZ(0,0,0); public double Area=1; }
  public class PlaneGeometryElement:IEnumerable<PlanarFace> { private bool HasGeometry; public PlaneGeometryElement(bool hasGeometry){HasGeometry=hasGeometry;}
   public IEnumerator<PlanarFace> GetEnumerator(){if(HasGeometry)yield return new PlanarFace();}
   IEnumerator IEnumerable.GetEnumerator()=>GetEnumerator(); }
  public class Element { public ElementId Id; public string Name; public Document Document; public Element(Document d){Document=d;Id=new ElementId(d.NextId++);} }
  public class Level:Element { public double Elevation; public Level(Document d):base(d){} }
- public class Plane { public XYZ Origin,Normal; public static Plane CreateByOriginAndBasis(XYZ o,XYZ x,XYZ y)=>new Plane{Origin=o,Normal=new XYZ(0,0,1)}; }
- public class ReferencePlane:Element { private Plane Plane; public ReferencePlane(Document d,XYZ a,XYZ b,XYZ normal):base(d){
+ public class Plane { public XYZ Origin,Normal; public static Plane CreateByOriginAndBasis(XYZ o,XYZ x,XYZ y)=>new Plane{Origin=o,Normal=new XYZ(0,0,1)};
+  public static Plane CreateByNormalAndOrigin(XYZ n,XYZ o)=>new Plane{Origin=o,Normal=n}; }
+ public class ReferencePlane:Element { private Plane Plane; public bool Pinned { get; set; } public ReferencePlane(Document d,XYZ a,XYZ b,XYZ normal):base(d){
   var vertical=Math.Abs(b.Y-a.Y)>Math.Abs(b.X-a.X); Plane=new Plane{Origin=a,Normal=vertical?new XYZ(1,0,0):new XYZ(0,1,0)}; }
   public Plane GetPlane()=>Plane;
   // Before regeneration the plane has no resolved geometry, so GetReference() is a
@@ -269,7 +276,8 @@ namespace Autodesk.Revit.DB {
   public PlaneGeometryElement get_Geometry(Options o)=>new PlaneGeometryElement(Document.Regenerated&&o.ComputeReferences); }
  public class View:Element { public View(Document d):base(d){} }
  public class ViewPlan:View { public bool IsTemplate; public ViewType ViewType=ViewType.FloorPlan; public Level GenLevel; public ViewPlan(Document d):base(d){} }
- public class SketchPlane { public static SketchPlane Create(Document doc,Plane plane)=>new SketchPlane(); }
+ public class SketchPlane { public static SketchPlane Create(Document doc,Plane plane)=>new SketchPlane();
+  public static SketchPlane Create(Document doc,ElementId levelId)=>new SketchPlane(); }
 
  public class Sketch { private Document Doc; private List<ModelCurve> Curves=new List<ModelCurve>(); public Sketch(Document d){Doc=d;} public void Add(ModelCurve c){Curves.Add(c);}
   public IEnumerable<ElementId> GetAllElements()=>Curves.Select(c=>c.Id).ToArray(); }
@@ -277,14 +285,17 @@ namespace Autodesk.Revit.DB {
   public Curve GeometryCurve=>Document.Scenario=="profile_wrapper_failure"?new WrapperLine{A=Line.A,B=Line.B}:Line; }
  public class WrapperLine:Line { public override Reference Reference=>null; }
  public class BoundingBoxXYZ { public XYZ Min,Max; }
- public class Definition { public string Name; }
+ public class Definition { public string Name; private ForgeTypeId DataType=SpecTypeId.Length; public ForgeTypeId GetDataType()=>DataType; }
  public class Parameter { public bool IsReadOnly; public double Value; public Definition Definition; public double AsDouble()=>Value; }
  public class ParameterSet { public int Size; }
  public class FamilyParameter:Element { public FamilyParameter(Document d,string name):base(d){Definition=new Definition{Name=name};Name=name;}
   public Definition Definition; public double Value; public bool IsInstance; public bool IsReporting; public StorageType StorageType=StorageType.Double; public object Unit=SpecTypeId.Length; public string Formula;
   public ParameterSet AssociatedParameters=new ParameterSet(); public object GetUnitTypeId()=>Unit; }
- public class Solid { public double Volume=1; public bool IsElementGeometry=true; }
- public class GeometryElement:IEnumerable<Solid> { public IEnumerator<Solid> GetEnumerator(){yield return new Solid{IsElementGeometry=Document.Scenario!="foreign_geometry"};} IEnumerator IEnumerable.GetEnumerator()=>GetEnumerator(); }
+ public class Solid:GeometryObject { public double Volume=1; public bool IsElementGeometry=true;
+  private List<Face> _faces=new List<Face>(); public List<Face> Faces=>_faces; public void AddFace(Face f){_faces.Add(f);} }
+ public class GeometryElement:IEnumerable<GeometryObject> { private Document Doc; private List<GeometryObject> _items=new List<GeometryObject>();
+  public GeometryElement(Document d){Doc=d;_items.Add(new Solid{IsElementGeometry=Document.Scenario!="foreign_geometry",Document=Doc});}
+  public IEnumerator<GeometryObject> GetEnumerator()=>_items.GetEnumerator(); IEnumerator IEnumerable.GetEnumerator()=>GetEnumerator(); }
  public class Options { public bool ComputeReferences; public bool IncludeNonVisibleObjects; public View View; }
  public class Extrusion:Element { public Extrusion(Document d):base(d){Sketch=new Sketch(d);} public Sketch Sketch; public double Height;
   private Parameter End=new Parameter(); private Parameter Start=new Parameter();
@@ -293,7 +304,17 @@ namespace Autodesk.Revit.DB {
   public BoundingBoxXYZ get_BoundingBox(object o){if(Document.FailGeometry)return null;
    var lines=Sketch.GetAllElements().Select(id=>((ModelCurve)Document.GetElement(id)).GeometryCurve).ToArray();
    return new BoundingBoxXYZ{Min=new XYZ(lines.Min(l=>l.GetEndPoint(0).X),lines.Min(l=>l.GetEndPoint(0).Y),0),Max=new XYZ(lines.Max(l=>l.GetEndPoint(1).X),lines.Max(l=>l.GetEndPoint(1).Y),Height)}; }
-  public GeometryElement get_Geometry(Options o)=>new GeometryElement(); }
+  public GeometryElement get_Geometry(Options o){var ge=new GeometryElement(Document);
+   // Pre-populate faces on the solid for face-lock matching
+   foreach(var obj in ge){if(obj is Solid s){
+    var lines=Sketch.GetAllElements().Select(id=>((ModelCurve)Document.GetElement(id)).GeometryCurve as Line).Where(l=>l!=null).ToArray();
+    var minX=lines.Min(l=>Math.Min(l.A.X,l.B.X));var maxX=lines.Max(l=>Math.Max(l.A.X,l.B.X));
+    var minY=lines.Min(l=>Math.Min(l.A.Y,l.B.Y));var maxY=lines.Max(l=>Math.Max(l.A.Y,l.B.Y));
+    s.AddFace(new PlanarFace{FaceNormal=new XYZ(-1,0,0),Origin=new XYZ(minX,(minY+maxY)/2,0),Reference=new Reference{IsGeometric=true}});
+    s.AddFace(new PlanarFace{FaceNormal=new XYZ(1,0,0),Origin=new XYZ(maxX,(minY+maxY)/2,0),Reference=new Reference{IsGeometric=true}});
+    s.AddFace(new PlanarFace{FaceNormal=new XYZ(0,-1,0),Origin=new XYZ((minX+maxX)/2,minY,0),Reference=new Reference{IsGeometric=true}});
+    s.AddFace(new PlanarFace{FaceNormal=new XYZ(0,1,0),Origin=new XYZ((minX+maxX)/2,maxY,0),Reference=new Reference{IsGeometric=true}});
+   }} return ge; } }
  public class FamilyType { public string Name; public FamilyType(string name){Name=name;} public double? AsDouble(FamilyParameter p)=>p.Value; }
  public class FamilyTypeSet:IEnumerable<FamilyType> { public List<FamilyType> Items=new List<FamilyType>();
   public IEnumerator<FamilyType> GetEnumerator()=>Items.GetEnumerator(); IEnumerator IEnumerable.GetEnumerator()=>GetEnumerator(); }
@@ -307,8 +328,10 @@ namespace Autodesk.Revit.DB {
   public void AssociateElementParameterToFamilyParameter(Parameter p,FamilyParameter f){var stored=Parameters.Single(x=>x.Id.Value==f.Id.Value);stored.AssociatedParameters.Size++;p.Definition=stored.Definition;Doc.Associations++;}
   public FamilyParameter GetAssociatedFamilyParameter(Parameter p)=>p.Definition==null?null:Copy(Parameters.Single(x=>x.Definition.Name==p.Definition.Name));
   private FamilyParameter Copy(FamilyParameter p)=>new FamilyParameter(Doc,p.Name){Id=p.Id,Value=p.Value,Formula=p.Formula}; }
- public class Dimension:Element { public Dimension(Document d,int references):base(d){References=references;} public int References;
+ public class Dimension:Element { public Dimension(Document d,int references):base(d){References=new ReferenceArray();for(int i=0;i<references;i++)References.Append(new Reference{IsGeometric=true});}
+  public ReferenceArray References; public DimensionShape DimensionShape=DimensionShape.Linear; public int NumberOfSegments=>References.Items.Count>2?References.Items.Count-1:0;
   public FamilyParameter FamilyLabel; public bool IsLocked { get; set; } public bool Locked=>IsLocked; public bool AreSegmentsEqual;
+  public double Value=4.0; public Parameter get_Parameter(BuiltInParameter p)=>new Parameter{IsReadOnly=false};
   public void SetLabel(FamilyParameter p){FamilyLabel=p;} }
  public class FilteredElementCollector { private Document Doc; private Type RequestedType; public FilteredElementCollector(Document d){Doc=d;}
   public FilteredElementCollector OfClass(Type t){RequestedType=t;return this;} public IEnumerable<T> Cast<T>()=>Doc.Items.OfType<T>(); }
@@ -363,7 +386,7 @@ public static class Probe { public static string Run(string scenario){
   ["save_lock_released_on_close"]=doc?.SaveLockReleasedOnClose??false,["locked_while_saved"]=doc?.LockedWhileSaved??false,["new_types"]=doc?.NewTypes??0,["new_parameters"]=doc?.NewParameters??0,
   ["set_values"]=doc?.SetValues??0,["labelled_dimensions_and_extrusion_associations"]=doc?.Associations??0,
   ["dimensions_created_after_regeneration"]=(doc?.DimensionsAfterRegeneration??0)==6,
-  ["origin_equality_count"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>d.References==2&&d.FamilyLabel!=null&&d.FamilyLabel.Name.StartsWith("_Half"))??0,
+  ["origin_equality_count"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>d.References.Items.Count==3&&d.AreSegmentsEqual)??0,
   ["private_family_discarded"]=RvtMcp.Plugin.Failures.FailureControl.Active.PrivateFamilyDiscarded,
   ["locked_profile_alignments"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>d.IsLocked)??0}.ToString(); }
  finally { doc?.ReleaseFailedCloseLock();try{Directory.Delete(dir,true);}catch{} } } }

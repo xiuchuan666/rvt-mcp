@@ -78,7 +78,7 @@ namespace RvtMcp.Server
         private static readonly DialogAnswerSession DialogAnswers = new DialogAnswerSession();
 
         // Capture the add-in's shared native document/view lifecycle stamp (independent slot from
-        // the dialog-answer document stamp). Used only for create_parametric_family. Sampled inside
+        // the dialog-answer document stamp). Used only by independent family-authoring tools. Sampled inside
         // the write lock, immediately before the request is serialized, so it detects a document or
         // view change during queueing. Confirmation-time identity (Home vs project A vs project B)
         // is enforced separately by expected_document_id / ToolReadPolicy.DocumentRejection.
@@ -93,7 +93,8 @@ namespace RvtMcp.Server
         }
 
         internal static bool IsFamilyCommand(string command) =>
-            string.Equals(command, "create_parametric_family", StringComparison.OrdinalIgnoreCase);
+            string.Equals(command, "create_parametric_family", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(command, "create_segment_family", StringComparison.OrdinalIgnoreCase);
 
         internal static JObject ConfigureDialogAnswers(JArray answers, string scope, bool clear)
         {

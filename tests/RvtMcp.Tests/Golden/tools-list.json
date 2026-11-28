@@ -1,6 +1,6 @@
 {
   "generated_by": "ToolsListSnapshotTests",
-  "tool_count": 259,
+  "tool_count": 260,
   "tools": [
     {
       "name": "revit_acquire_coordinates_from_link",
@@ -2500,6 +2500,66 @@
           "category",
           "name",
           "fields"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "revit_create_segment_family",
+      "description_hash": "sha256:8ae631daa7ebd92892e9284e45fd911616c3b8a9a8678be53059bcf13bf080e2",
+      "inputSchema": {
+        "properties": {
+          "familyName": {
+            "description": "",
+            "type": "String"
+          },
+          "outerDiameterMm": {
+            "description": "",
+            "type": "Double"
+          },
+          "outputPath": {
+            "description": "",
+            "type": "String"
+          },
+          "ringWidthMm": {
+            "description": "",
+            "type": "Double"
+          },
+          "segmentAngleDeg": {
+            "description": "",
+            "type": "Double"
+          },
+          "templatePath": {
+            "description": "",
+            "type": "String"
+          },
+          "thicknessMm": {
+            "description": "",
+            "type": "Double"
+          },
+          "timeout_seconds": {
+            "description": "",
+            "type": "Int32"
+          },
+          "typeName": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "familyName",
+          "templatePath",
+          "outputPath",
+          "outerDiameterMm",
+          "thicknessMm",
+          "ringWidthMm",
+          "segmentAngleDeg"
         ],
         "type": "object"
       },

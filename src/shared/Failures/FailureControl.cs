@@ -723,7 +723,7 @@ namespace RvtMcp.Plugin.Failures
                     // The native stop code is the authoritative error. result.Data is left untouched:
                     // it may be an anonymous payload (batch_execute results/rolledBack, save_checkpoint
                     // recovery fields, …) that must survive, and any lifecycle diagnostic is written by
-                    // the handler itself (see CreateParametricFamilyHandler), already redacted upstream.
+                    // the handler itself (see CreateParametricFamilyHandler and CreateSegmentFamilyHandler), already redacted upstream.
                     result.Success = false;
                     result.Error = ErrorCode ?? "REVIT_FAILURE_ROLLED_BACK";
                 }

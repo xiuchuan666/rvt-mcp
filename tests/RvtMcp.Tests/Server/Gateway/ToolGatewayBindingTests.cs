@@ -168,7 +168,7 @@ namespace RvtMcp.Tests
                             lock (Requests) Requests.Add(req);
                             var documentError = TargetStamp == null ? null : ToolReadPolicy.DocumentRejection(command,
                                 req.Value<string>("expected_document_id"), TargetStamp.Value<string>("document_id"));
-                            if (command == "create_parametric_family" && documentError == null)
+                            if (ToolReadPolicy.IsFamilyAuthoringCommand(command) && documentError == null)
                             {
                                 var target = TargetStamp?.Value<string>("target_id") ?? "";
                                 var stamp = ToolGateway.ReadContextStampForTests != null
@@ -356,9 +356,11 @@ namespace RvtMcp.Tests
         }
 
         [Theory]
-        [InlineData(null)]
-        [InlineData("doc-a")]
-        public async Task Family_creation_carries_native_context_stamp_and_rejects_confirmation_a_then_b(string confirmedDocument)
+        [InlineData(null, "create_parametric_family")]
+        [InlineData(null, "create_segment_family")]
+        [InlineData("doc-a", "create_parametric_family")]
+        [InlineData("doc-a", "create_segment_family")]
+        public async Task Family_creation_carries_native_context_stamp_and_rejects_confirmation_a_then_b(string confirmedDocument, string command)
         {
             var targetId = "revit-2024-" + PidA;
             using var context = new DialogDocumentContext(targetId);
@@ -370,7 +372,7 @@ namespace RvtMcp.Tests
             RevitTargetBinding.Switch(TargetSelector.ForPid(PidA), RevitTargetBinding.Scan().Live);
             RevitTargetBinding.Binding.ConfirmDocument(RevitTargetBinding.CaptureGeneration(), confirmedDocument);
 
-            var success = await Send("create_parametric_family");
+            var success = await Send(command);
             Assert.True(success.Value<bool>("ok"), success.ToString());
             var request = Assert.Single(host.Requests);
             Assert.Equal(context.FamilyStamp, request.Value<long>("expected_context_generation"));
@@ -380,13 +382,13 @@ namespace RvtMcp.Tests
             // Confirmation-time identity (A vs B) is enforced by expected_document_id, not the stamp.
             context.InvalidateFamily();
             host.TargetStamp["document_id"] = "doc-b";
-            var changed = await Send("create_parametric_family");
+            var changed = await Send(command);
             Assert.StartsWith("DOCUMENT_CHANGED:", changed.Value<string>("error"));
-            Assert.Equal(1, host.Commands.Count(c => c == "create_parametric_family"));
+            Assert.Equal(1, host.Commands.Count(c => c == command));
 
             context.InvalidateFamily();
             host.TargetStamp["document_id"] = confirmedDocument;
-            // The FakeTcpHost's own create_parametric_family branch (above) already compares the live
+            // The FakeTcpHost's family-authoring guard (above) already compares the live
             // family stamp against expected_context_generation and rejects a mismatch with
             // DOCUMENT_CONTEXT_CHANGED. Model the exact queue delay that must reject a stale dispatch:
             // the native family stamp changes after WriteLine but before the host evaluates its guard.
@@ -396,10 +398,10 @@ namespace RvtMcp.Tests
             var previousRead = ToolGateway.ReadContextStampForTests;
             ToolGateway.ReadContextStampForTests = _ => ++reads == 2 ? stamp + 1 : stamp;
             JObject expired;
-            try { expired = await Send("create_parametric_family"); }
+            try { expired = await Send(command); }
             finally { ToolGateway.ReadContextStampForTests = previousRead; }
             Assert.StartsWith("DOCUMENT_CONTEXT_CHANGED:", expired.Value<string>("error"));
-            Assert.Equal(1, host.Commands.Count(c => c == "create_parametric_family"));
+            Assert.Equal(1, host.Commands.Count(c => c == command));
 
         }
 

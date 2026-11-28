@@ -27,6 +27,7 @@ namespace RvtMcp.Server
         {
             "load_family_from_path",
             "create_parametric_family",
+            "create_segment_family",
             "open_model",
             "link_revit_model",
             "reload_link"

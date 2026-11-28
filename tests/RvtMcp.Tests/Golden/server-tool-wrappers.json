@@ -1385,6 +1385,28 @@
       "result": "Error: golden probe failure"
     }
   },
+  "revit_create_segment_family": {
+    "success": {
+      "calls": [
+        {
+          "command": "create_segment_family",
+          "params": "{\"family_name\":\"probe\",\"template_path\":\"C:\\\\probe\\\\file.dat\",\"output_path\":\"C:\\\\probe\\\\file.dat\",\"type_name\":\"Standard\",\"outer_diameter_mm\":1.0,\"thickness_mm\":1.0,\"ring_width_mm\":1.0,\"segment_angle_deg\":1.0,\"timeout_seconds\":300}",
+          "timeout": 300
+        }
+      ],
+      "result": "{\r\n  \"golden_probe\": true,\r\n  \"items\": [\r\n    1,\r\n    2\r\n  ]\r\n}"
+    },
+    "failure": {
+      "calls": [
+        {
+          "command": "create_segment_family",
+          "params": "{\"family_name\":\"probe\",\"template_path\":\"C:\\\\probe\\\\file.dat\",\"output_path\":\"C:\\\\probe\\\\file.dat\",\"type_name\":\"Standard\",\"outer_diameter_mm\":1.0,\"thickness_mm\":1.0,\"ring_width_mm\":1.0,\"segment_angle_deg\":1.0,\"timeout_seconds\":300}",
+          "timeout": 300
+        }
+      ],
+      "result": "Error: golden probe failure"
+    }
+  },
   "revit_create_shared_parameter": {
     "success": {
       "calls": [

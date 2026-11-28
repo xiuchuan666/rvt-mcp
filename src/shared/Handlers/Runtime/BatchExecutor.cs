@@ -126,9 +126,9 @@ namespace RvtMcp.Plugin.Handlers
 
                 // This command owns a separate family document and transaction, not the active
                 // project's transaction group. Dispatching it here would mix unrelated undo scopes.
-                if (string.Equals(cmdName, "create_parametric_family", StringComparison.OrdinalIgnoreCase))
+                if (ToolReadPolicy.IsFamilyAuthoringCommand(cmdName))
                 {
-                    outcome.Results.Add(new { index = i, ok = false, error = "create_parametric_family cannot be invoked through batch_execute; call revit_create_parametric_family directly." });
+                    outcome.Results.Add(new { index = i, ok = false, error = cmdName + " cannot be invoked through batch_execute; call the corresponding revit_ family-authoring tool directly." });
                     outcome.AnyFailed = true;
                     if (!continueOnError) return outcome;
                     continue;

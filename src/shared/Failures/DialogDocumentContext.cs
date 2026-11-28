@@ -10,7 +10,7 @@ namespace RvtMcp.Failures
     // Two independent slots share one 16-byte map (both x64 8-byte aligned, no tearing):
     //   offset 0 — Stamp: active-document identity, invalidates dialog answers (scope session/next).
     //              Same-document view activation and background document closes must NOT bump it.
-    //   offset 8 — FamilyStamp: native document/view lifecycle generation for create_parametric_family.
+    //   offset 8 — FamilyStamp: native document/view lifecycle generation for independent family authoring.
     //              Bumped on document open/close and view activation, independent of dialog answers.
     internal sealed class DialogDocumentContext : IDisposable
     {

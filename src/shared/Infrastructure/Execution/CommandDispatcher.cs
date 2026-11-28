@@ -107,6 +107,7 @@ namespace RvtMcp.Plugin
             Register(new Handlers.ExportFamilyToPathHandler());
             // Explicit version-gated result on older shells; no Unknown command fallback.
             Register(new Handlers.CreateParametricFamilyHandler());
+            Register(new Handlers.CreateSegmentFamilyHandler());
             Register(new Handlers.ProbeExtrusionSketchHandler());
             // Phase 14: MEP Systems
             Register(new Handlers.CreateDuctHandler());

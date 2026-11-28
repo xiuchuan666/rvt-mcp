@@ -129,8 +129,11 @@ namespace RvtMcp.Plugin
 
         // Family authoring owns a separate new document. Its gateway binding must still be confirmed,
         // but a project active-document ID must not block a deliberately confirmed Home target.
-        private static bool IsIndependentFamilyAuthoring(string command) =>
-            string.Equals(command, "create_parametric_family", StringComparison.OrdinalIgnoreCase);
+        internal static bool IsFamilyAuthoringCommand(string command) =>
+            string.Equals(command, "create_parametric_family", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(command, "create_segment_family", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsIndependentFamilyAuthoring(string command) => IsFamilyAuthoringCommand(command);
 
         public static string DocumentRejection(string command, string expectedDocumentId, string activeDocumentId,
             bool gatewayConfirmsDocuments = true)

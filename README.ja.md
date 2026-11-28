@@ -20,7 +20,7 @@
   <a href="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml"><img src="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>
   <a href="#supported-revit-versions"><img src="https://img.shields.io/badge/Revit-2022--2027-186BFF" alt="Revit 2022-2027" /></a>
-  <a href="#tools"><img src="https://img.shields.io/badge/MCP-259%20tools-6C47FF" alt="MCP tools" /></a>
+  <a href="#tools"><img src="https://img.shields.io/badge/MCP-260%20tools-6C47FF" alt="MCP tools" /></a>
   <a href="https://github.com/bimwright/rvt-mcp/releases/latest"><img src="https://img.shields.io/github/v/release/bimwright/rvt-mcp" alt="latest release" /></a>
   <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-version%20history-informational" alt="changelog" /></a>
 </p>
@@ -93,14 +93,14 @@ rvt-mcp を使ったコミュニティ動画です。動画内のインストー
 
 ## Tools
 
-現在の開発カタログでは、`all` が 258 件、adaptive bake が 261 件、素の既定が 63 件です。
+現在の開発カタログでは、`all` が 259 件、adaptive bake が 262 件、素の既定が 63 件です。
 
 | モード | Tools | 注記 |
 |--------|------:|------|
-| 新規インストール | **258** | `install.ps1` が `rvtmcp.config.json` に `"toolsets": ["all"]` をシード |
+| 新規インストール | **259** | `install.ps1` が `rvtmcp.config.json` に `"toolsets": ["all"]` をシード |
 | 素の `rvt-mcp.exe` | **63** | `query` + `create` + `view` + `meta` |
-| `--toolsets all` | **259** | フルカタログ |
-| `all` + adaptive bake | **262** | 提案ライフサイクル 3 ツールを追加 |
+| `--toolsets all` | **260** | フルカタログ |
+| `all` + adaptive bake | **263** | 提案ライフサイクル 3 ツールを追加 |
 
 件数に個人 baked ツールは含みません。インストーラーがシードするのは `rvtmcp.config.json` に `toolsets` が未設定の場合のみ——独自リストはアップグレード後も残り、キー削除（または独自 CSV）で素のサーバーは 63 ツールに戻ります。Read-only は `ReadOnly=true` のツールだけを残すため、混在 toolset 内の読み取りツールも使えます。既定の出力が inline でも、ファイルを書けるツールは除外されます。エージェント報告はユーザーごとの報告データのみを書くため、許可されます。
 
@@ -113,7 +113,7 @@ rvt-mcp を使ったコミュニティ動画です。動画内のインストー
 | `documents` | オプトインのローカルモデル/ファミリー保存とチェックポイント管理、workshared のローカル保存。[document lifecycle](docs/document-lifecycle.md) を参照。 |
 | `lint` | ビュー命名、firm-profile、警告サマリ |
 | `schedule` | 集計表 list/作成、フィールド、式、データ |
-| `families` | ロード/アンロード、タイプ、インスタンス、監査、`.rfa` エクスポート（プロジェクト側） |
+| `families` | ロード/アンロード、タイプ、インスタンス、監査、`.rfa` エクスポート、Revit 2027 ネイティブ矩形・扇形リングセグメントのパラメトリックファミリー作成 |
 | `modify` | 操作/着色、パラメータ、タイプ変更、ワークセット |
 | `delete` | id 削除 |
 | `annotation` | タグ、文字、寸法、塗り、キーノート、検査 |

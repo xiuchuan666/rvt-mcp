@@ -195,7 +195,10 @@ namespace RvtMcp.Tests
             var changed = source.Substring(source.IndexOf("private static void OnDocumentChanged", StringComparison.Ordinal));
             var commitBranch = changed.Substring(changed.IndexOf("TransactionCommitted ||", StringComparison.Ordinal));
             commitBranch = commitBranch.Substring(0, commitBranch.IndexOf("TransactionUndone", StringComparison.Ordinal));
-            Assert.Contains("Active.Operation.Tool == \"create_parametric_family\"", commitBranch);
+            Assert.Contains("ToolReadPolicy.IsFamilyAuthoringCommand(Active.Operation.Tool)", commitBranch);
+            var policy = ReadSource("Infrastructure", "ToolReadPolicy.cs");
+            Assert.Contains("\"create_parametric_family\"", policy);
+            Assert.Contains("\"create_segment_family\"", policy);
             Assert.Contains("McpDocument.CurrentOwnedDocument(document)", commitBranch);
             // The original accounting path is still present for every other tool.
             Assert.Contains("Active.AnyCommitted = true; Active.BatchRolledBack = false; Active.CommittedLog.Committed", commitBranch);

@@ -31,8 +31,9 @@ Install only the [latest GitHub Release](https://github.com/bimwright/rvt-mcp/re
 
 ## Unreleased
 
-- Catalog counts: `--toolsets all` **259**, adaptive bake **262**, and bare defaults **63**.
+- Catalog counts: `--toolsets all` **260**, adaptive bake **263**, and bare defaults **63**.
 - Add Revit 2027 `revit_create_parametric_family`: author a native, editable rectangular extrusion with Length, Width and Height type parameters. Save to a new local `.rfa` only; failed creation closes the family without writing the requested output. Native Revit 2027 hosted E2E, including reopening and flexing the saved family, remains required.
+- Add Revit 2027 `revit_create_segment_family`: author an annular-sector tunnel segment with OuterDiameter, Thickness, RingWidth and SegmentAngle type parameters, formula-driven radial dimensions, angular dimensions, locked profile alignments and actual solid/bounding-box read-back. The file lifecycle is non-overwriting and cleans up its temporary family on failure. Hosted Revit 2027 acceptance remains required for native arc-center references, creation, each parameter's geometry flex, save/close/reopen, and loading and placing the family in a project; offline Revit API stubs do not establish that acceptance.
 
 ## v2.5.2 — 2026-11-26
 

@@ -99,7 +99,7 @@ namespace RvtMcp.Plugin
                             Failures.FailureControl.ObserveDialogDocument(app.ActiveUIDocument?.Document);
                             RvtMcp.Failures.DialogDocumentContext.RequireCurrent(Failures.FailureControl.DialogContext, request.DialogAnswerContext);
                         }
-                        if (string.Equals(request.CommandName, "create_parametric_family", StringComparison.OrdinalIgnoreCase))
+                        if (ToolReadPolicy.IsFamilyAuthoringCommand(request.CommandName))
                         {
                             // Observe the current active document first: if the document identity
                             // changed in the Closing→Closed gap (before OnIdling ran), this bumps the

@@ -16,6 +16,7 @@ namespace RvtMcp.Tests
         {
             "revit_audit_families",
             "revit_create_parametric_family",
+            "revit_create_segment_family",
             "revit_duplicate_family_type",
             "revit_export_family_to_path",
             "revit_get_family_instances",
@@ -188,6 +189,27 @@ namespace RvtMcp.Tests
             Assert.Equal(120, sent.TimeoutSeconds);
             Assert.Null(json["overwrite_existing"]);
         }
+        [Fact]
+        public async Task Create_segment_family_sends_mm_angle_and_default_timeout_without_overwrite()
+        {
+            var sent = await Capture.Send(() => FamiliesTools.CreateSegmentFamily(
+                "Jintang segment", @"C:\Templates\Generic Model.rft", @"C:\Families\Segment.rfa",
+                14000, 600, 2000, 36));
+
+            Assert.Equal("create_segment_family", sent.Command);
+            var json = sent.Json();
+            Assert.Equal("Jintang segment", json.Value<string>("family_name"));
+            Assert.Equal(@"C:\Templates\Generic Model.rft", json.Value<string>("template_path"));
+            Assert.Equal(@"C:\Families\Segment.rfa", json.Value<string>("output_path"));
+            Assert.Equal("Standard", json.Value<string>("type_name"));
+            Assert.Equal(14000, json.Value<double>("outer_diameter_mm"));
+            Assert.Equal(600, json.Value<double>("thickness_mm"));
+            Assert.Equal(2000, json.Value<double>("ring_width_mm"));
+            Assert.Equal(36, json.Value<double>("segment_angle_deg"));
+            Assert.Equal(300, sent.TimeoutSeconds);
+            Assert.Null(json["overwrite_existing"]);
+        }
+
         [Fact]
         public async Task Export_family_to_path_sends_output_path_and_string_id()
         {

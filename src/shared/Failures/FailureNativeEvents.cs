@@ -225,12 +225,12 @@ namespace RvtMcp.Plugin.Failures
                     _lastOpened = null;
                     if (args.Operation == UndoOperation.TransactionCommitted || args.Operation == UndoOperation.TransactionRedone)
                     {
-                        // Only create_parametric_family treats commits on its owned temporary family
+                        // Only the two independent family-authoring tools treat commits on their owned temporary family
                         // document as private. send_code_to_revit also TrackOpens documents (via
                         // SendCodeDocumentRewriter) and MUST keep the original AnyCommitted /
                         // CommittedLog accounting for them — this branch is scoped by tool, not by
                         // ownership alone, so ordinary script commits are never suppressed.
-                        if (Active.Operation.Tool == "create_parametric_family"
+                        if (ToolReadPolicy.IsFamilyAuthoringCommand(Active.Operation.Tool)
                             && McpDocument.CurrentOwnedDocument(document) != null)
                         {
                             // Private until the final output file exists; not external mutation.

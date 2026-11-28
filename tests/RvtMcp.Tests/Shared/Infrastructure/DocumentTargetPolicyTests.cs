@@ -49,21 +49,25 @@ namespace RvtMcp.Tests
             }
         }
         [Theory]
-        [InlineData(null, null, true)]
-        [InlineData(null, "doc-a", false)]
-        [InlineData("doc-a", "doc-a", true)]
-        [InlineData("doc-a", "doc-b", false)]
+        [InlineData("create_parametric_family", null, null, true)]
+        [InlineData("create_parametric_family", null, "doc-a", false)]
+        [InlineData("create_parametric_family", "doc-a", "doc-a", true)]
+        [InlineData("create_parametric_family", "doc-a", "doc-b", false)]
+        [InlineData("create_segment_family", null, null, true)]
+        [InlineData("create_segment_family", null, "doc-a", false)]
+        [InlineData("create_segment_family", "doc-a", "doc-a", true)]
+        [InlineData("create_segment_family", "doc-a", "doc-b", false)]
         public void Independent_family_authoring_preserves_exact_document_or_home_confirmation(
-            string expected, string actual, bool allowed)
+            string command, string expected, string actual, bool allowed)
         {
-            var rejection = ToolReadPolicy.DocumentRejection("create_parametric_family", expected, actual);
+            var rejection = ToolReadPolicy.DocumentRejection(command, expected, actual);
             Assert.Equal(allowed, rejection == null);
             if (!allowed) Assert.StartsWith("DOCUMENT_CHANGED:", rejection);
-            Assert.Equal(allowed, ToolReadPolicy.DocumentRejection("CREATE_PARAMETRIC_FAMILY", expected, actual, true) == null);
-            Assert.StartsWith("PAIRING_REQUIRED:", ToolReadPolicy.DocumentRejection("create_parametric_family", null, actual, false));
+            Assert.Equal(allowed, ToolReadPolicy.DocumentRejection(command.ToUpperInvariant(), expected, actual, true) == null);
+            Assert.StartsWith("PAIRING_REQUIRED:", ToolReadPolicy.DocumentRejection(command, null, actual, false));
             Assert.Equal(allowed && expected != null,
-                ToolReadPolicy.DocumentRejection("create_parametric_family", expected, actual, false) == null);
-            Assert.Contains("READ_ONLY", ToolReadPolicy.Rejection("create_parametric_family", true, true));
+                ToolReadPolicy.DocumentRejection(command, expected, actual, false) == null);
+            Assert.Contains("READ_ONLY", ToolReadPolicy.Rejection(command, true, true));
         }
 
         [Fact]

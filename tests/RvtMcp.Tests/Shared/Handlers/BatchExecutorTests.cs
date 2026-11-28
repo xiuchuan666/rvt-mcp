@@ -73,19 +73,21 @@ namespace RvtMcp.Tests
         }
 
         [Theory]
-        [InlineData(false)]
-        [InlineData(true)]
-        public void Independent_family_transaction_is_never_dispatched_in_batch(bool continueOnError)
+        [InlineData("create_parametric_family", false)]
+        [InlineData("create_parametric_family", true)]
+        [InlineData("create_segment_family", false)]
+        [InlineData("create_segment_family", true)]
+        public void Independent_family_transaction_is_never_dispatched_in_batch(string command, bool continueOnError)
         {
             var invoked = false;
-            var outcome = BatchExecutor.Run(Cmds(("create_parametric_family", null)), continueOnError, (_, __) =>
+            var outcome = BatchExecutor.Run(Cmds((command, null)), continueOnError, (_, __) =>
             {
                 invoked = true;
                 return BatchExecutor.InvokeResult.Ok(null);
             });
             Assert.False(invoked);
             Assert.True(outcome.AnyFailed);
-            Assert.Contains("call revit_create_parametric_family directly", Newtonsoft.Json.JsonConvert.SerializeObject(outcome.Results));
+            Assert.Contains("call the corresponding revit_ family-authoring tool directly", Newtonsoft.Json.JsonConvert.SerializeObject(outcome.Results));
         }
 
         [Fact]

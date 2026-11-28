@@ -419,7 +419,7 @@ namespace RvtMcp.Plugin.Handlers
             var box = extrusion.get_BoundingBox(null);
             if (box == null) throw new InvalidOperationException("The extrusion has no geometry bounding box after regeneration.");
             var actual = new[] { box.Max.X - box.Min.X, box.Max.Y - box.Min.Y, box.Max.Z - box.Min.Z }.Select(SegmentFamilyInput.MillimetersFromFeet).ToArray();
-            var expected = SegmentFamilyInput.ExpectedBoundingBoxMm(requested[0], requested[2], requested[3]);
+            var expected = SegmentFamilyInput.ExpectedBoundingBoxMm(requested[0], requested[1], requested[2], requested[3]);
             var matches = actual.Zip(expected, (a, e) => Math.Abs(a - e) <= 0.01).ToArray();
             if (matches.Any(m => !m)) throw new InvalidOperationException("Regenerated arc extrusion bounding box does not match the analytic annular-sector bounds within 0.01 mm.");
             return new

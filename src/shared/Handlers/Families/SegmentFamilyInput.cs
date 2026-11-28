@@ -32,15 +32,23 @@ namespace RvtMcp.Plugin.Handlers
         internal static double HalfAngleRadians(double angleDegrees)
             => angleDegrees * Math.PI / 360.0;
 
-        internal static double[] ExpectedBoundingBoxMm(double outerDiameterMm, double ringWidthMm, double angleDegrees)
+        internal static double[] ExpectedBoundingBoxMm(double outerDiameterMm, double thicknessMm, double ringWidthMm, double angleDegrees)
         {
-            var radius = outerDiameterMm * 0.5;
+            var outer = outerDiameterMm * 0.5;
+            var inner = outer - thicknessMm;
             var half = HalfAngleRadians(angleDegrees);
             var sin = Math.Sin(half);
             var cos = Math.Cos(half);
-            // Outer arc p1→outer midpoint→p2 is always the positive-angle short arc.
-            // The opposite radial edge may cross the negative Y axis when angle > 180°.
-            return new[] { radius * (1 - cos), radius * (half > Math.PI / 2 ? 2 : 2 * sin), ringWidthMm };
+            // The annular sector is symmetric about +X. The outer arc apex sits at X=outer.
+            // X minimum: for half<=90deg the inner arc endpoints are the leftmost points
+            // (inner*cos); for half>90deg the outer arc wraps past the Y axis to X=-outer.
+            // X span therefore must include the inner arc — using outer*(1-cos) alone would
+            // describe only the outer arc sagitta and wrongly reject the correct native geometry.
+            var minX = half > Math.PI / 2 ? -outer : inner * cos;
+            var x = outer - minX;
+            // Y span: chord width of the outer arc for half<=90deg, full diameter beyond that.
+            var y = half > Math.PI / 2 ? 2 * outer : 2 * outer * sin;
+            return new[] { x, y, ringWidthMm };
         }
 
         internal static double MillimetersFromFeet(double feet) => ParametricFamilyInput.MillimetersFromFeet(feet);

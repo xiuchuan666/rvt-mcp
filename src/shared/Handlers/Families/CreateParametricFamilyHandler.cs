@@ -519,6 +519,13 @@ namespace RvtMcp.Plugin.Handlers
                 && RevitCompat.GetId(actual.Id) == RevitCompat.GetId(expected.Id) && actual.Definition.Name == expected.Definition.Name;
         }
 
+        private static FamilyParameter SafeFamilyLabel(Dimension dimension)
+        {
+            // Revit throws for dimensions that cannot be labelled (for example, locked alignments).
+            try { return dimension.FamilyLabel; }
+            catch { return null; }
+        }
+
         private static object ReadBack(Document doc, FamilyManager manager,
             IReadOnlyDictionary<string, FamilyParameter> parameters, Extrusion extrusion,
             string familyName, string typeName, double[] dimensions, int eqCount, int lockCount)
@@ -528,13 +535,21 @@ namespace RvtMcp.Plugin.Handlers
             var end = extrusion.get_Parameter(BuiltInParameter.EXTRUSION_END_PARAM);
 
             var allDims = new FilteredElementCollector(doc).OfClass(typeof(Dimension)).Cast<Dimension>().ToList();
-            var lengthDim = allDims.FirstOrDefault(d => d.FamilyLabel != null && d.FamilyLabel.Definition.Name == "Length");
-            var widthDim = allDims.FirstOrDefault(d => d.FamilyLabel != null && d.FamilyLabel.Definition.Name == "Width");
+            var lengthDim = allDims.FirstOrDefault(d =>
+            {
+                var label = SafeFamilyLabel(d);
+                return label != null && label.Definition.Name == "Length";
+            });
+            var widthDim = allDims.FirstOrDefault(d =>
+            {
+                var label = SafeFamilyLabel(d);
+                return label != null && label.Definition.Name == "Width";
+            });
 
             var associated = new[]
             {
-                lengthDim != null && IsFamilyParameter(lengthDim.FamilyLabel, parameters["Length"]),
-                widthDim != null && IsFamilyParameter(widthDim.FamilyLabel, parameters["Width"]),
+                lengthDim != null && IsFamilyParameter(SafeFamilyLabel(lengthDim), parameters["Length"]),
+                widthDim != null && IsFamilyParameter(SafeFamilyLabel(widthDim), parameters["Width"]),
                 end != null && IsFamilyParameter(manager.GetAssociatedFamilyParameter(end), parameters["Height"])
             };
             for (var i = 0; i < names.Length; i++)

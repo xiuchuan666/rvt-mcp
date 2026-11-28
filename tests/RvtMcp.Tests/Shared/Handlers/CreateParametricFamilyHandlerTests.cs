@@ -56,6 +56,24 @@ public sealed class CreateParametricFamilyHandlerTests
         Assert.Empty(result["temporary_files"]!);
     }
 
+    [Fact]
+    public void ReadBack_survives_locked_alignment_dimensions_whose_FamilyLabel_throws()
+    {
+        // Real Revit 2027 throws "This dimension can not be labeled" when .FamilyLabel is read on
+        // the locked-alignment dimensions produced by NewAlignment. ReadBack must skip those and
+        // still resolve the Length/Width labelled dimensions and count the 4 face locks.
+        var result = R27Probe.Value("alignment_familylabel_throws");
+        Assert.True(result.Value<bool>("success"), result.Value<string>("error"));
+        var data = result["data"]!;
+        Assert.True(data["parameters"]![0]!.Value<bool>("associated"));  // Length still resolved
+        Assert.True(data["parameters"]![1]!.Value<bool>("associated"));  // Width still resolved
+        Assert.True(data["parameters"]![2]!.Value<bool>("associated"));  // Height still resolved
+        Assert.Equal(2, data["geometry"]!.Value<int>("labelled_dimension_count"));
+        Assert.Equal(4, data["geometry"]!.Value<int>("locked_alignment_count"));
+        Assert.True(data["geometry"]!.Value<bool>("dimensions_match"));
+        Assert.Empty(result["temporary_files"]!);
+    }
+
     [Theory]
     [InlineData("geometry_failure", 0)]
     [InlineData("template_failure", 0)]
@@ -330,9 +348,17 @@ namespace Autodesk.Revit.DB {
   private FamilyParameter Copy(FamilyParameter p)=>new FamilyParameter(Doc,p.Name){Id=p.Id,Value=p.Value,Formula=p.Formula}; }
  public class Dimension:Element { public Dimension(Document d,int references):base(d){References=new ReferenceArray();for(int i=0;i<references;i++)References.Append(new Reference{IsGeometric=true});}
   public ReferenceArray References; public DimensionShape DimensionShape=DimensionShape.Linear; public int NumberOfSegments=>References.Items.Count>2?References.Items.Count-1:0;
-  public FamilyParameter FamilyLabel; public bool IsLocked { get; set; } public bool Locked=>IsLocked; public bool AreSegmentsEqual;
+  private FamilyParameter _familyLabel;
+  // Real Revit 2027 throws when FamilyLabel is read on a dimension that cannot be labelled
+  // (e.g. a locked alignment). The "alignment_familylabel_throws" scenario reproduces that so
+  // ReadBack must use SafeFamilyLabel instead of touching .FamilyLabel on every dimension.
+  public FamilyParameter FamilyLabel {
+   get { if(Document.Scenario=="alignment_familylabel_throws"&&IsLocked&&_familyLabel==null)
+    throw new InvalidOperationException("This dimension can not be labeled."); return _familyLabel; }
+   set { _familyLabel=value; } }
+  public bool IsLocked { get; set; } public bool Locked=>IsLocked; public bool AreSegmentsEqual;
   public double Value=4.0; public Parameter get_Parameter(BuiltInParameter p)=>new Parameter{IsReadOnly=false};
-  public void SetLabel(FamilyParameter p){FamilyLabel=p;} }
+  public void SetLabel(FamilyParameter p){_familyLabel=p;} }
  public class FilteredElementCollector { private Document Doc; private Type RequestedType; public FilteredElementCollector(Document d){Doc=d;}
   public FilteredElementCollector OfClass(Type t){RequestedType=t;return this;} public IEnumerable<T> Cast<T>()=>Doc.Items.OfType<T>(); }
  public class Transaction:IDisposable { private Document Doc; private TransactionStatus Status;

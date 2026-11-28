@@ -1143,6 +1143,28 @@
       "result": "Error: golden probe failure"
     }
   },
+  "revit_create_parametric_family": {
+    "success": {
+      "calls": [
+        {
+          "command": "create_parametric_family",
+          "params": "{\"family_name\":\"probe\",\"template_path\":\"C:\\\\probe\\\\file.dat\",\"output_path\":\"C:\\\\probe\\\\file.dat\",\"length_mm\":1.0,\"width_mm\":1.0,\"height_mm\":1.0,\"parameter_names\":\"Length,Width,Height\",\"parameter_scope\":\"type\",\"type_name\":\"Standard\",\"timeout_seconds\":600}",
+          "timeout": 600
+        }
+      ],
+      "result": "{\r\n  \"golden_probe\": true,\r\n  \"items\": [\r\n    1,\r\n    2\r\n  ]\r\n}"
+    },
+    "failure": {
+      "calls": [
+        {
+          "command": "create_parametric_family",
+          "params": "{\"family_name\":\"probe\",\"template_path\":\"C:\\\\probe\\\\file.dat\",\"output_path\":\"C:\\\\probe\\\\file.dat\",\"length_mm\":1.0,\"width_mm\":1.0,\"height_mm\":1.0,\"parameter_names\":\"Length,Width,Height\",\"parameter_scope\":\"type\",\"type_name\":\"Standard\",\"timeout_seconds\":600}",
+          "timeout": 600
+        }
+      ],
+      "result": "Error: golden probe failure"
+    }
+  },
   "revit_create_pipe": {
     "success": {
       "calls": [
@@ -1358,6 +1380,28 @@
           "command": "create_schedule",
           "params": "{\"category\":\"probe\",\"name\":\"probe\",\"fields\":[\"Mark\"],\"filters\":null,\"sortGroup\":null,\"isItemized\":true,\"phase\":\"\"}",
           "timeout": null
+        }
+      ],
+      "result": "Error: golden probe failure"
+    }
+  },
+  "revit_create_segment_family": {
+    "success": {
+      "calls": [
+        {
+          "command": "create_segment_family",
+          "params": "{\"family_name\":\"probe\",\"template_path\":\"C:\\\\probe\\\\file.dat\",\"output_path\":\"C:\\\\probe\\\\file.dat\",\"type_name\":\"Standard\",\"outer_diameter_mm\":1.0,\"thickness_mm\":1.0,\"ring_width_mm\":1.0,\"segment_angle_deg\":1.0,\"timeout_seconds\":300}",
+          "timeout": 300
+        }
+      ],
+      "result": "{\r\n  \"golden_probe\": true,\r\n  \"items\": [\r\n    1,\r\n    2\r\n  ]\r\n}"
+    },
+    "failure": {
+      "calls": [
+        {
+          "command": "create_segment_family",
+          "params": "{\"family_name\":\"probe\",\"template_path\":\"C:\\\\probe\\\\file.dat\",\"output_path\":\"C:\\\\probe\\\\file.dat\",\"type_name\":\"Standard\",\"outer_diameter_mm\":1.0,\"thickness_mm\":1.0,\"ring_width_mm\":1.0,\"segment_angle_deg\":1.0,\"timeout_seconds\":300}",
+          "timeout": 300
         }
       ],
       "result": "Error: golden probe failure"
@@ -3909,6 +3953,28 @@
         {
           "command": "place_view_on_sheet",
           "params": "{\"viewId\":1,\"sheetId\":null,\"sheetNumber\":\"\",\"sheetName\":\"MCP Generated Sheet\",\"x_mm\":null,\"y_mm\":null}",
+          "timeout": null
+        }
+      ],
+      "result": "Error: golden probe failure"
+    }
+  },
+  "revit_probe_extrusion_sketch": {
+    "success": {
+      "calls": [
+        {
+          "command": "probe_extrusion_sketch",
+          "params": "{\"model_path\":\"C:\\\\probe\\\\file.dat\",\"extrusion_id\":null,\"create_reference_plane\":false,\"create_dimension\":false,\"commit_probe\":false}",
+          "timeout": null
+        }
+      ],
+      "result": "{\r\n  \"golden_probe\": true,\r\n  \"items\": [\r\n    1,\r\n    2\r\n  ]\r\n}"
+    },
+    "failure": {
+      "calls": [
+        {
+          "command": "probe_extrusion_sketch",
+          "params": "{\"model_path\":\"C:\\\\probe\\\\file.dat\",\"extrusion_id\":null,\"create_reference_plane\":false,\"create_dimension\":false,\"commit_probe\":false}",
           "timeout": null
         }
       ],

@@ -82,6 +82,37 @@ namespace RvtMcp.Tests
                 NativeOutcomeUnknown = true }, captureComplete: false), "partial", true, true);
         }
 
+        // Fourth-review P0-1: Scope.Complete folds PrivateTransientCommits into AnyCommittedChanges
+        // while the family is NOT discarded. These cases pin the receipt that fold must produce.
+
+        [Fact] public void Retained_private_family_with_a_committed_transaction_reports_applied_change()
+        {
+            // Family committed its transaction, SaveAs never ran, document stayed open (not discarded):
+            // AnyCommittedChanges folds to true → a failed call is partial/mutationApplied:true, not
+            // a misleading rolled_back/mutationApplied:false.
+            AssertOutcome(Complete(new FailureCompletionFacts { ExecutionStarted = true,
+                AnyCommittedChanges = true }), "partial", true, false);
+            AssertOutcome(Complete(new FailureCompletionFacts { ExecutionStarted = true, PolicyStopped = true,
+                AnyCommittedChanges = true }), "partial", true, false);
+        }
+
+        [Fact] public void Fully_discarded_private_family_reports_no_applied_mutation()
+        {
+            // Fully discarded (closed + temp deleted) → Complete passes AnyCommittedChanges:false and
+            // NativeCommitted:false even though commits happened; a failed typed handler rolls back.
+            AssertOutcome(Complete(new FailureCompletionFacts { ExecutionStarted = true }), "rolled_back", false, false);
+            AssertOutcome(Complete(new FailureCompletionFacts { ExecutionStarted = true, PolicyStopped = true,
+                NativeCancelled = true }), "cancelled", false, false);
+        }
+
+        [Fact] public void Retained_saved_temporary_family_still_reports_native_commit()
+        {
+            // SaveAs succeeded but the temp file was retained (doc open or delete failed) →
+            // PrivateFamilyDiscarded is false, so NativeCommitted stays true → partial/true.
+            AssertOutcome(Complete(new FailureCompletionFacts { ExecutionStarted = true, NativeCommitted = true,
+                PolicyStopped = true }), "partial", true, false);
+        }
+
         [Fact] public void GroupRollbackCannotUndoEarlierNativeSave()
         {
             AssertOutcome(Complete(new FailureCompletionFacts { ExecutionStarted = true, NativeCommitted = true,

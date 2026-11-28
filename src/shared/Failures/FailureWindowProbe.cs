@@ -59,7 +59,16 @@ namespace RvtMcp.Plugin.Failures
         }
 
         // A model opening, closing or view change makes a window's model uncertain until the next idle snapshot.
-        private static void BumpContextGeneration() { Interlocked.Increment(ref _contextGeneration); }
+        // This generation is window-uncertainty bookkeeping only. It must NOT invalidate DialogContext.Stamp:
+        // that stamp encodes active-document identity, which same-document view activation and
+        // background (non-active) document closes do not change. revit_set_dialog_answers semantics
+        // for ordinary tools depend on that distinction. Family authoring gets its own independent
+        // slot (DialogDocumentContext.FamilyStamp) so ordinary dialog declarations are untouched.
+        private static void BumpContextGeneration()
+        {
+            Interlocked.Increment(ref _contextGeneration);
+            try { DialogContext?.InvalidateFamily(); } catch { }
+        }
 
         private static void UpdateContextSnapshot(Autodesk.Revit.DB.Document doc, string modelScopeKey)
         {

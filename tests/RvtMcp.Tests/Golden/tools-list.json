@@ -1,6 +1,6 @@
 {
   "generated_by": "ToolsListSnapshotTests",
-  "tool_count": 257,
+  "tool_count": 260,
   "tools": [
     {
       "name": "revit_acquire_coordinates_from_link",
@@ -1966,6 +1966,61 @@
       }
     },
     {
+      "name": "revit_create_parametric_family",
+      "description_hash": "sha256:d3f6766c6aa56ae05ae191069009436e2e9f224756526058c61e4f65700830c7",
+      "inputSchema": {
+        "properties": {
+          "familyName": {
+            "description": "",
+            "type": "String"
+          },
+          "heightMm": {
+            "description": "",
+            "type": "Double"
+          },
+          "lengthMm": {
+            "description": "",
+            "type": "Double"
+          },
+          "outputPath": {
+            "description": "",
+            "type": "String"
+          },
+          "templatePath": {
+            "description": "",
+            "type": "String"
+          },
+          "timeout_seconds": {
+            "description": "",
+            "type": "Int32"
+          },
+          "typeName": {
+            "description": "",
+            "type": "String"
+          },
+          "widthMm": {
+            "description": "",
+            "type": "Double"
+          }
+        },
+        "required": [
+          "familyName",
+          "templatePath",
+          "outputPath",
+          "lengthMm",
+          "widthMm",
+          "heightMm"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      }
+    },
+    {
       "name": "revit_create_pipe",
       "description_hash": "sha256:cfe46fbb009a29ca592ac2e08ee9a205bc0ebfd38a33b8e4bdde83762b8c8899",
       "inputSchema": {
@@ -2445,6 +2500,66 @@
           "category",
           "name",
           "fields"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "revit_create_segment_family",
+      "description_hash": "sha256:8ae631daa7ebd92892e9284e45fd911616c3b8a9a8678be53059bcf13bf080e2",
+      "inputSchema": {
+        "properties": {
+          "familyName": {
+            "description": "",
+            "type": "String"
+          },
+          "outerDiameterMm": {
+            "description": "",
+            "type": "Double"
+          },
+          "outputPath": {
+            "description": "",
+            "type": "String"
+          },
+          "ringWidthMm": {
+            "description": "",
+            "type": "Double"
+          },
+          "segmentAngleDeg": {
+            "description": "",
+            "type": "Double"
+          },
+          "templatePath": {
+            "description": "",
+            "type": "String"
+          },
+          "thicknessMm": {
+            "description": "",
+            "type": "Double"
+          },
+          "timeout_seconds": {
+            "description": "",
+            "type": "Int32"
+          },
+          "typeName": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "familyName",
+          "templatePath",
+          "outputPath",
+          "outerDiameterMm",
+          "thicknessMm",
+          "ringWidthMm",
+          "segmentAngleDeg"
         ],
         "type": "object"
       },
@@ -6428,6 +6543,44 @@
         "idempotentHint": false,
         "openWorldHint": false,
         "readOnlyHint": false
+      }
+    },
+    {
+      "name": "revit_probe_extrusion_sketch",
+      "description_hash": "sha256:93497f581cbbe6266e39909d2a5b131d3d75e1b20c019802d44540b242086808",
+      "inputSchema": {
+        "properties": {
+          "commitProbe": {
+            "description": "",
+            "type": "Boolean"
+          },
+          "createDimension": {
+            "description": "",
+            "type": "Boolean"
+          },
+          "createReferencePlane": {
+            "description": "",
+            "type": "Boolean"
+          },
+          "extrusionId": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "modelPath": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "modelPath"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
       }
     },
     {

@@ -48,5 +48,72 @@ namespace RvtMcp.Tests
                 Assert.Contains("MCP client", rejection);
             }
         }
+        [Theory]
+        [InlineData("create_parametric_family", null, null, true)]
+        [InlineData("create_parametric_family", null, "doc-a", false)]
+        [InlineData("create_parametric_family", "doc-a", "doc-a", true)]
+        [InlineData("create_parametric_family", "doc-a", "doc-b", false)]
+        [InlineData("create_segment_family", null, null, true)]
+        [InlineData("create_segment_family", null, "doc-a", false)]
+        [InlineData("create_segment_family", "doc-a", "doc-a", true)]
+        [InlineData("create_segment_family", "doc-a", "doc-b", false)]
+        public void Independent_family_authoring_preserves_exact_document_or_home_confirmation(
+            string command, string expected, string actual, bool allowed)
+        {
+            var rejection = ToolReadPolicy.DocumentRejection(command, expected, actual);
+            Assert.Equal(allowed, rejection == null);
+            if (!allowed) Assert.StartsWith("DOCUMENT_CHANGED:", rejection);
+            Assert.Equal(allowed, ToolReadPolicy.DocumentRejection(command.ToUpperInvariant(), expected, actual, true) == null);
+            Assert.StartsWith("PAIRING_REQUIRED:", ToolReadPolicy.DocumentRejection(command, null, actual, false));
+            Assert.Equal(allowed && expected != null,
+                ToolReadPolicy.DocumentRejection(command, expected, actual, false) == null);
+            Assert.Contains("READ_ONLY", ToolReadPolicy.Rejection(command, true, true));
+        }
+
+        [Fact]
+        public void Independent_family_authoring_rejects_a_changed_native_document_context()
+        {
+            using var context = new RvtMcp.Failures.DialogDocumentContext("family-policy-test-" + System.Guid.NewGuid().ToString("N"));
+            Assert.Null(RvtMcp.Failures.DialogDocumentContext.FamilyRejection(context, context.FamilyStamp));
+            Assert.StartsWith("DOCUMENT_CONTEXT_CHANGED:",
+                RvtMcp.Failures.DialogDocumentContext.FamilyRejection(context, context.FamilyStamp - 1));
+            // Bumping the family slot must NOT touch the dialog-answer document stamp (offset 0),
+            // and vice versa: the two slots are independent by design.
+            var documentStamp = context.Stamp;
+            context.InvalidateFamily();
+            Assert.Equal(documentStamp, context.Stamp);
+            Assert.StartsWith("DOCUMENT_CONTEXT_CHANGED:",
+                RvtMcp.Failures.DialogDocumentContext.FamilyRejection(context, context.FamilyStamp - 1));
+            // A document-identity change alone does not invalidate the family lifecycle stamp.
+            var familyStamp = context.FamilyStamp;
+            context.Invalidate();
+            Assert.Equal(familyStamp, context.FamilyStamp);
+            Assert.StartsWith("DOCUMENT_CONTEXT_CHANGED:",
+                RvtMcp.Failures.DialogDocumentContext.FamilyRejection(null, 12));
+        }
+
+        [Fact]
+        public void Family_and_dialog_slots_are_independent_in_shared_memory()
+        {
+            var target = "family-slots-" + System.Guid.NewGuid().ToString("N");
+            using var context = new RvtMcp.Failures.DialogDocumentContext(target);
+            var docStamp = RvtMcp.Failures.DialogDocumentContext.Read(target);
+            var familyStamp = RvtMcp.Failures.DialogDocumentContext.ReadFamily(target);
+            Assert.Equal(context.Stamp, docStamp);
+            Assert.Equal(context.FamilyStamp, familyStamp);
+            context.InvalidateFamily();
+            Assert.Equal(docStamp, RvtMcp.Failures.DialogDocumentContext.Read(target));
+            Assert.Equal(familyStamp + 1, RvtMcp.Failures.DialogDocumentContext.ReadFamily(target));
+            context.Invalidate();
+            Assert.Equal(docStamp + 1, RvtMcp.Failures.DialogDocumentContext.Read(target));
+            Assert.Equal(familyStamp + 1, RvtMcp.Failures.DialogDocumentContext.ReadFamily(target));
+        }
+
+        [Fact]
+        public void Ordinary_writes_still_reject_unconfirmed_or_changed_documents()
+        {
+            Assert.Contains("DOCUMENT_UNCONFIRMED", ToolReadPolicy.DocumentRejection("create_level", null, null));
+            Assert.Contains("DOCUMENT_CHANGED", ToolReadPolicy.DocumentRejection("create_level", "doc-a", "doc-b"));
+        }
     }
 }

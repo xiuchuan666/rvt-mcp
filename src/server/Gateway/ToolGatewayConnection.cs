@@ -77,6 +77,25 @@ namespace RvtMcp.Server
         internal static Action BeforeWriteForTests;
         private static readonly DialogAnswerSession DialogAnswers = new DialogAnswerSession();
 
+        // Capture the add-in's shared native document/view lifecycle stamp (independent slot from
+        // the dialog-answer document stamp). Used only by independent family-authoring tools. Sampled inside
+        // the write lock, immediately before the request is serialized, so it detects a document or
+        // view change during queueing. Confirmation-time identity (Home vs project A vs project B)
+        // is enforced separately by expected_document_id / ToolReadPolicy.DocumentRejection.
+        internal static Func<string, long?> ReadContextStampForTests { get; set; }
+        internal static long? FamilyContextStamp()
+        {
+            var record = RevitTargetBinding.Snapshot().Record;
+            if (record == null) return null;
+            return ReadContextStampForTests != null
+                ? ReadContextStampForTests(record.TargetId)
+                : DialogDocumentContext.ReadFamily(record.TargetId);
+        }
+
+        internal static bool IsFamilyCommand(string command) =>
+            string.Equals(command, "create_parametric_family", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(command, "create_segment_family", StringComparison.OrdinalIgnoreCase);
+
         internal static JObject ConfigureDialogAnswers(JArray answers, string scope, bool clear)
         {
             lock (_connectLock)
@@ -712,7 +731,8 @@ namespace RvtMcp.Server
                                 rejection = ToolReadPolicy.AddinPairingRequired;
                             else if (rejection == null && !ToolReadPolicy.IsReadOnly(command)
                                 // Send-code also supports Home; the add-in checks the actual document at execution.
-                                && !binding.CanWrite(effectiveGeneration, command != "open_model" && command != "send_code_to_revit", out var writeFailure))
+                                && !binding.CanWrite(effectiveGeneration, command != "open_model" && command != "send_code_to_revit"
+                                    && !IsFamilyCommand(command), out var writeFailure))
                                 throw new TargetException(writeFailure);
                             else if (rejection == null && declared != null && !conn.DialogAnswersProtocol)
                                 rejection = "PAIRING_REQUIRED: the bound add-in does not support dialog_answers_v2. Clear declarations or update the add-in.";
@@ -735,6 +755,16 @@ namespace RvtMcp.Server
                                         final["_script"]["telemetry_status"] = "write_failed";
                                 });
                             _pending[id] = pending;
+                            // Sample the family lifecycle stamp inside the write lock, as late as
+                            // possible before serialization, so a document/view change during
+                            // queueing is caught at the add-in execution boundary. (The family
+                            // slot is independent of dialog answers; reading it here is cheap.)
+                            if (IsFamilyCommand(command))
+                            {
+                                requestObject["expected_context_generation"] = FamilyContextStamp();
+                                request = requestObject.ToString(Formatting.None);
+                                if (scriptReceipt != null) scriptReceipt["wire_request_bytes"] = ScriptIdentity.Utf8Bytes(request);
+                            }
                             // From here a write may partially reach Revit. Never replay a next declaration.
                             if (declared != null) DialogAnswers.Sending();
                             current = true;

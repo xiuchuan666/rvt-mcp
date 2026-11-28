@@ -20,7 +20,7 @@
   <a href="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml"><img src="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>
   <a href="#supported-revit-versions"><img src="https://img.shields.io/badge/Revit-2022--2027-186BFF" alt="Revit 2022-2027" /></a>
-  <a href="#tools"><img src="https://img.shields.io/badge/MCP-257%20tools-6C47FF" alt="MCP tools" /></a>
+  <a href="#tools"><img src="https://img.shields.io/badge/MCP-260%20tools-6C47FF" alt="MCP tools" /></a>
   <a href="https://github.com/bimwright/rvt-mcp/releases/latest"><img src="https://img.shields.io/github/v/release/bimwright/rvt-mcp" alt="latest release" /></a>
   <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-version%20history-informational" alt="changelog" /></a>
 </p>
@@ -92,14 +92,14 @@ powershell -ExecutionPolicy Bypass -File "$dir\install.ps1" -Client claude-deskt
 
 ## Tools
 
-下表数量对应 **v2.5.2 发布版**：`all` 为 257 个、adaptive bake 为 260 个、裸服务器默认为 63 个。
+当前开发目录：`all` 为 259 个、adaptive bake 为 262 个、裸服务器默认为 63 个。
 
 | 模式 | Tools | 说明 |
 |------|------:|------|
-| 全新安装 | **257** | `install.ps1` 在 `rvtmcp.config.json` 中写入 `"toolsets": ["all"]` |
+| 全新安装 | **259** | `install.ps1` 在 `rvtmcp.config.json` 中写入 `"toolsets": ["all"]` |
 | 裸 `rvt-mcp.exe` | **63** | `query` + `create` + `view` + `meta` |
-| `--toolsets all` | **257** | 完整目录 |
-| `all` + adaptive bake | **260** | 再加 3 个 suggestion 生命周期工具 |
+| `--toolsets all` | **260** | 完整目录 |
+| `all` + adaptive bake | **263** | 再加 3 个 suggestion 生命周期工具 |
 
 数量不含个人 baked 工具。只有当 `rvtmcp.config.json` 尚未设置 `toolsets` 时安装器才会写入默认值——你的自定义列表在升级时保留；删除该键（或设置自己的 CSV）则裸服务器回到 63 个工具。Read-only 按 `ReadOnly=true` 逐个筛选工具，因此混合 toolset 中的读取工具仍可用。即使默认 output 是 inline，能写文件的工具也会被排除；agent 报告只写入用户自己的报告数据，因此允许使用。
 
@@ -112,7 +112,7 @@ powershell -ExecutionPolicy Bypass -File "$dir\install.ps1" -Client claude-deskt
 | `documents` | 可选启用：本地模型/族的保存和检查点管理，以及 workshared 本地保存。见 [document lifecycle](docs/document-lifecycle.md)。 |
 | `lint` | 视图命名、firm-profile、警告摘要 |
 | `schedule` | 明细表 list/创建、字段、公式、数据 |
-| `families` | 加载/卸载、类型、实例、审计、导出 `.rfa`（项目侧） |
+| `families` | 加载/卸载、类型、实例、审计、导出 `.rfa`；Revit 2027 原生矩形及扇形环带管片参数化族创建 |
 | `modify` | 操作/着色、写参数、换类型、workset |
 | `delete` | 按 id 删除 |
 | `annotation` | 标记、文字、尺寸、填充、keynote、检查 |
@@ -341,6 +341,7 @@ Annotations 描述每个工具对文档和文件的影响。临时 selection、a
       "mcp__rvt-mcp__revit_list_view_templates",
       "mcp__rvt-mcp__revit_list_worksets",
       "mcp__rvt-mcp__revit_load_selection",
+      "mcp__rvt-mcp__revit_probe_extrusion_sketch",
       "mcp__rvt-mcp__revit_lookup_message",
       "mcp__rvt-mcp__revit_measure_distance_between_elements",
       "mcp__rvt-mcp__revit_project_point_onto_face",

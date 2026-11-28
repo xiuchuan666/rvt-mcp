@@ -15,12 +15,15 @@ namespace RvtMcp.Tests
         private static readonly string[] FamiliesToolsInClass =
         {
             "revit_audit_families",
+            "revit_create_parametric_family",
+            "revit_create_segment_family",
             "revit_duplicate_family_type",
             "revit_export_family_to_path",
             "revit_get_family_instances",
             "revit_list_family_types_in_family",
             "revit_list_loaded_families",
             "revit_load_family_from_path",
+            "revit_probe_extrusion_sketch",
             "revit_rename_family_type",
             "revit_replace_family_type",
             "revit_unload_family"
@@ -163,6 +166,48 @@ namespace RvtMcp.Tests
             Assert.Equal(5, json.Value<int>("start_index"));
             Assert.Equal(20, json.Value<int>("max_types"));
             Assert.Single(json["parameter_names"]);
+        }
+
+        [Fact]
+        public async Task Create_parametric_family_sends_mm_dimensions_and_never_overwrites()
+        {
+            var sent = await Capture.Send(() => FamiliesTools.CreateParametricFamily(
+                "Cabinet", @"C:\Templates\Generic Model.rft", @"C:\Families\Cabinet.rfa",
+                1200, 600, 900, "Standard", 120));
+
+            Assert.Equal("create_parametric_family", sent.Command);
+            var json = sent.Json();
+            Assert.Equal("Cabinet", json.Value<string>("family_name"));
+            Assert.Equal(@"C:\Templates\Generic Model.rft", json.Value<string>("template_path"));
+            Assert.Equal(@"C:\Families\Cabinet.rfa", json.Value<string>("output_path"));
+            Assert.Equal(1200, json.Value<double>("length_mm"));
+            Assert.Equal(600, json.Value<double>("width_mm"));
+            Assert.Equal(900, json.Value<double>("height_mm"));
+            Assert.Equal("Length,Width,Height", json.Value<string>("parameter_names"));
+            Assert.Equal("type", json.Value<string>("parameter_scope"));
+            Assert.Equal("Standard", json.Value<string>("type_name"));
+            Assert.Equal(120, sent.TimeoutSeconds);
+            Assert.Null(json["overwrite_existing"]);
+        }
+        [Fact]
+        public async Task Create_segment_family_sends_mm_angle_and_default_timeout_without_overwrite()
+        {
+            var sent = await Capture.Send(() => FamiliesTools.CreateSegmentFamily(
+                "Jintang segment", @"C:\Templates\Generic Model.rft", @"C:\Families\Segment.rfa",
+                14000, 600, 2000, 36));
+
+            Assert.Equal("create_segment_family", sent.Command);
+            var json = sent.Json();
+            Assert.Equal("Jintang segment", json.Value<string>("family_name"));
+            Assert.Equal(@"C:\Templates\Generic Model.rft", json.Value<string>("template_path"));
+            Assert.Equal(@"C:\Families\Segment.rfa", json.Value<string>("output_path"));
+            Assert.Equal("Standard", json.Value<string>("type_name"));
+            Assert.Equal(14000, json.Value<double>("outer_diameter_mm"));
+            Assert.Equal(600, json.Value<double>("thickness_mm"));
+            Assert.Equal(2000, json.Value<double>("ring_width_mm"));
+            Assert.Equal(36, json.Value<double>("segment_angle_deg"));
+            Assert.Equal(300, sent.TimeoutSeconds);
+            Assert.Null(json["overwrite_existing"]);
         }
 
         [Fact]

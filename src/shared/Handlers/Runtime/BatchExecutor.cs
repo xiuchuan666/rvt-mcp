@@ -124,6 +124,16 @@ namespace RvtMcp.Plugin.Handlers
                     continue;
                 }
 
+                // This command owns a separate family document and transaction, not the active
+                // project's transaction group. Dispatching it here would mix unrelated undo scopes.
+                if (ToolReadPolicy.IsFamilyAuthoringCommand(cmdName))
+                {
+                    outcome.Results.Add(new { index = i, ok = false, error = cmdName + " cannot be invoked through batch_execute; call the corresponding revit_ family-authoring tool directly." });
+                    outcome.AnyFailed = true;
+                    if (!continueOnError) return outcome;
+                    continue;
+                }
+
                 if (string.Equals(cmdName, "save_document", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(cmdName, "save_checkpoint", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(cmdName, "manage_checkpoints", StringComparison.OrdinalIgnoreCase))

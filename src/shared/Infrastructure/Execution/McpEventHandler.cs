@@ -25,6 +25,7 @@ namespace RvtMcp.Plugin
         public bool FromMcp { get; set; }
         public string ExpectedDocumentId { get; set; }
         public bool DocumentProtocol { get; set; }
+        public long? ExpectedContextGeneration { get; set; }
         public long? DialogAnswerContext { get; set; }
         public JArray DialogAnswers { get; set; }
         public TaskCompletionSource<string> Tcs { get; set; }
@@ -97,6 +98,16 @@ namespace RvtMcp.Plugin
                         {
                             Failures.FailureControl.ObserveDialogDocument(app.ActiveUIDocument?.Document);
                             RvtMcp.Failures.DialogDocumentContext.RequireCurrent(Failures.FailureControl.DialogContext, request.DialogAnswerContext);
+                        }
+                        if (ToolReadPolicy.IsFamilyAuthoringCommand(request.CommandName))
+                        {
+                            // Observe the current active document first: if the document identity
+                            // changed in the Closing→Closed gap (before OnIdling ran), this bumps the
+                            // family stamp so the comparison below cannot pass on a stale dispatch.
+                            Failures.FailureControl.ObserveDialogDocument(app.ActiveUIDocument?.Document);
+                            var contextRejection = RvtMcp.Failures.DialogDocumentContext.FamilyRejection(
+                                Failures.FailureControl.DialogContext, request.ExpectedContextGeneration);
+                            if (contextRejection != null) throw new InvalidOperationException(contextRejection);
                         }
                         var documentRejection = ToolReadPolicy.DocumentRejection(request.CommandName,
                             request.ExpectedDocumentId, actualTarget.Value<string>("document_id"), request.DocumentProtocol);
@@ -399,7 +410,8 @@ namespace RvtMcp.Plugin
                     failureScope?.Enrich(errorEnvelope);
                     if (actualTarget != null) errorEnvelope["_target"] = actualTarget;
                     if (exError.StartsWith("DOCUMENT_UNCONFIRMED:", StringComparison.Ordinal)
-                        || exError.StartsWith("DOCUMENT_CHANGED:", StringComparison.Ordinal))
+                        || exError.StartsWith("DOCUMENT_CHANGED:", StringComparison.Ordinal)
+                        || exError.StartsWith("DOCUMENT_CONTEXT_CHANGED:", StringComparison.Ordinal))
                         errorEnvelope["_operation"] = new JObject
                         {
                             ["operationId"] = PendingRequestLifecycle.For(request.Tcs).OperationId,

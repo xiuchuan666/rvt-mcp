@@ -104,6 +104,7 @@ namespace RvtMcp.Plugin
             "list_view_templates",
             "list_worksets",
             "load_selection",
+            "probe_extrusion_sketch",
             "measure_distance_between_elements",
             "project_point_onto_face",
             "raycast_from_point",
@@ -126,12 +127,28 @@ namespace RvtMcp.Plugin
         public static bool RequiresDocumentConfirmation(string command) => !IsReadOnly(command)
             && !string.Equals(command, "open_model", StringComparison.OrdinalIgnoreCase);
 
+        // Family authoring owns a separate new document. Its gateway binding must still be confirmed,
+        // but a project active-document ID must not block a deliberately confirmed Home target.
+        internal static bool IsFamilyAuthoringCommand(string command) =>
+            string.Equals(command, "create_parametric_family", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(command, "create_segment_family", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsIndependentFamilyAuthoring(string command) => IsFamilyAuthoringCommand(command);
+
         public static string DocumentRejection(string command, string expectedDocumentId, string activeDocumentId,
             bool gatewayConfirmsDocuments = true)
         {
             if (!RequiresDocumentConfirmation(command)) return null;
             if (string.IsNullOrWhiteSpace(expectedDocumentId) && !gatewayConfirmsDocuments)
                 return GatewayPairingRequired;
+            if (IsIndependentFamilyAuthoring(command))
+            {
+                if (!string.Equals(expectedDocumentId ?? "", activeDocumentId ?? "", StringComparison.Ordinal))
+                    return "DOCUMENT_CHANGED: the active document differs from the document or Home state confirmed for family authoring. The independent family was not started. Confirm the intended target again (for an open project: revit_switch_target(verify=true); for Revit Home: revit_switch_target(version=\"pid:<n>\", verify=false)).";
+                // The gateway sends the add-in's own shared DialogDocumentContext stamp;
+                // McpEventHandler validates it immediately before native execution.
+                return null;
+            }
             // An explicitly selected Home process has no document to confirm. A queued
             // script must still be rejected if a document opens before it executes.
             if (string.IsNullOrWhiteSpace(expectedDocumentId) && string.IsNullOrEmpty(activeDocumentId)

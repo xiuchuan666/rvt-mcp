@@ -361,6 +361,16 @@ namespace RvtMcp.Plugin.Failures
             internal readonly bool IsRead;
             private readonly bool _opensModel;
             internal bool Stopped, Cancelled, BatchRolledBack, AnyCommitted, NativeCommitted, StorageFailed, Persisted, ExecutionStarted;
+            // Commits that happened only on tool-owned temporary family documents. Not external mutation.
+            internal int PrivateTransientCommits;
+            // Set by a handler only after every tool-owned temporary family document was closed without
+            // saving to the requested output AND its temporary .rfa was deleted. Lets the failure
+            // receipt report a discarded private family as no external mutation rather than partial.
+            internal bool PrivateFamilyDiscarded { get; private set; }
+
+            // Available on every shell (the field above is read on all of them); only the R27 family
+            // handler calls it. A method keeps the assignment inside shared code for all TFMs.
+            internal void MarkPrivateFamilyDiscarded() { PrivateFamilyDiscarded = true; }
             internal string ErrorCode;
             internal string FailureModelKey;
             internal string OpenPath;
@@ -689,7 +699,11 @@ namespace RvtMcp.Plugin.Failures
                     ExecutionStarted = ExecutionStarted, HandlerSucceeded = result?.Success == true,
                     IsReadOnly = IsRead, HasPersistedRecord = Persisted, HasIncidents = Incidents.Count > 0,
                     PolicyStopped = Stopped, NativeCancelled = Cancelled, GroupRolledBack = BatchRolledBack,
-                    AnyCommittedChanges = AnyCommitted, NativeCommitted = NativeCommitted,
+                    // Private family commits still count as an applied change while the family is NOT
+                    // fully discarded (committed doc left open = a real effect to report). Once the
+                    // family was discarded and its temp file deleted, nothing survived the failed call.
+                    AnyCommittedChanges = AnyCommitted || (PrivateTransientCommits > 0 && !PrivateFamilyDiscarded),
+                    NativeCommitted = NativeCommitted && !PrivateFamilyDiscarded,
                     StorageFailed = StorageFailed, NativeOutcomeUnknown = NativeOutcome == "unknown",
                     ActiveDocumentObserved = _activeDocumentBeforeObserved && activeDocumentAfterObserved
                 });
@@ -704,7 +718,15 @@ namespace RvtMcp.Plugin.Failures
                         try { Record(incident); } catch { StorageFailure(); }
                     }
                 }
-                if (Stopped && result != null) { result.Success = false; result.Error = ErrorCode ?? "REVIT_FAILURE_ROLLED_BACK"; }
+                if (Stopped && result != null)
+                {
+                    // The native stop code is the authoritative error. result.Data is left untouched:
+                    // it may be an anonymous payload (batch_execute results/rolledBack, save_checkpoint
+                    // recovery fields, …) that must survive, and any lifecycle diagnostic is written by
+                    // the handler itself (see CreateParametricFamilyHandler and CreateSegmentFamilyHandler), already redacted upstream.
+                    result.Success = false;
+                    result.Error = ErrorCode ?? "REVIT_FAILURE_ROLLED_BACK";
+                }
             }
 
             internal void Enrich(JObject envelope)

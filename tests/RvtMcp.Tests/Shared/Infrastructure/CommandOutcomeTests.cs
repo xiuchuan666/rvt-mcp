@@ -140,6 +140,100 @@ namespace RvtMcp.Tests
             Assert.Contains("outcome.Error", toastArgs);
         }
 
+        [Fact]
+        public void Every_shell_parses_expected_context_generation_so_older_versions_reach_unsupported_version()
+        {
+            // P0-3 regression guard: if any R22–R26 shell drops expected_context_generation, the shared
+            // McpEventHandler family guard would fail closed with DOCUMENT_CONTEXT_CHANGED before the
+            // handler can return UNSUPPORTED_VERSION. All six shells must parse the field identically.
+            var root = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(ReadSourcePath())!, "..", "..", "..", ".."));
+            foreach (var year in new[] { "22", "23", "24", "25", "26", "27" })
+            {
+                var source = File.ReadAllText(Path.Combine(root, "src", "plugin-r" + year, "App.cs"));
+                Assert.Contains("ExpectedContextGeneration = request.Value<long?>(\"expected_context_generation\")", source);
+            }
+        }
+
+        [Fact]
+        public void Family_document_context_rejection_emits_a_not_started_operation_receipt()
+        {
+            // P1-1 regression guard: DOCUMENT_CONTEXT_CHANGED must produce the same not_started
+            // _operation receipt as DOCUMENT_UNCONFIRMED / DOCUMENT_CHANGED.
+            var source = ReadSource("Infrastructure/Execution", "McpEventHandler.cs");
+            var block = source.Substring(source.IndexOf("DOCUMENT_UNCONFIRMED:", StringComparison.Ordinal));
+            Assert.Contains("DOCUMENT_CONTEXT_CHANGED:", block.Substring(0, block.IndexOf("};", StringComparison.Ordinal)));
+        }
+
+        [Fact]
+        public void Scope_complete_folds_private_family_commits_into_one_apply_and_never_destroys_result_data()
+        {
+            var source = ReadSource("Failures", "FailureControl.cs");
+
+            // P0-1: the redundant second FailureCompletion.Apply is gone — exactly one call in Complete.
+            var complete = source.Substring(source.IndexOf("internal void Complete(CommandResult result)", StringComparison.Ordinal));
+            complete = complete.Substring(0, complete.IndexOf("internal void Enrich", StringComparison.Ordinal));
+            Assert.Equal(1, CountOccurrences(complete, "FailureCompletion.Apply(Operation"));
+            // Private commits fold into AnyCommittedChanges while the family is NOT discarded.
+            Assert.Contains("AnyCommitted || (PrivateTransientCommits > 0 && !PrivateFamilyDiscarded)", complete);
+            Assert.Contains("NativeCommitted = NativeCommitted && !PrivateFamilyDiscarded", complete);
+
+            // P0-2: no global `result.Data as JObject ?? new JObject()` overwrite that would destroy
+            // batch_execute's anonymous { results, rolledBack } / save_checkpoint's recovery payload
+            // or copy an unredacted handler error onto the wire.
+            Assert.DoesNotContain("result.Data as JObject", complete);
+            Assert.DoesNotContain("result.Data =", complete);
+            Assert.DoesNotContain("lifecycle_diagnostic", complete);
+        }
+
+        [Fact]
+        public void Private_commit_diversion_is_scoped_to_the_family_tool_not_all_owned_documents()
+        {
+            // P0-1: send_code_to_revit also TrackOpens documents via SendCodeDocumentRewriter, so a
+            // bare ownership check would swallow script AnyCommitted/CommittedLog accounting. The
+            // diversion must be gated on the family tool name.
+            var source = ReadSource("Failures", "FailureNativeEvents.cs");
+            var changed = source.Substring(source.IndexOf("private static void OnDocumentChanged", StringComparison.Ordinal));
+            var commitBranch = changed.Substring(changed.IndexOf("TransactionCommitted ||", StringComparison.Ordinal));
+            commitBranch = commitBranch.Substring(0, commitBranch.IndexOf("TransactionUndone", StringComparison.Ordinal));
+            Assert.Contains("ToolReadPolicy.IsFamilyAuthoringCommand(Active.Operation.Tool)", commitBranch);
+            var policy = ReadSource("Infrastructure", "ToolReadPolicy.cs");
+            Assert.Contains("\"create_parametric_family\"", policy);
+            Assert.Contains("\"create_segment_family\"", policy);
+            Assert.Contains("McpDocument.CurrentOwnedDocument(document)", commitBranch);
+            // The original accounting path is still present for every other tool.
+            Assert.Contains("Active.AnyCommitted = true; Active.BatchRolledBack = false; Active.CommittedLog.Committed", commitBranch);
+        }
+
+        [Fact]
+        public void Family_stamp_is_refreshed_on_real_document_switch_open_and_close()
+        {
+            // P1-2: Observe must move BOTH slots on a real document-identity change (and neither on a
+            // same-document view switch), and a completed close must bump the family slot.
+            var context = ReadSource("Failures", "DialogDocumentContext.cs");
+            var observe = context.Substring(context.IndexOf("internal void Observe(", StringComparison.Ordinal));
+            observe = observe.Substring(0, observe.IndexOf("internal void Invalidate()", StringComparison.Ordinal));
+            Assert.Contains("Invalidate();", observe);
+            Assert.Contains("InvalidateFamily();", observe);
+            Assert.Contains("if (activeDocumentId == _documentId) return;", observe);
+
+            var events = ReadSource("Failures", "FailureNativeEvents.cs");
+            var opened = events.Substring(events.IndexOf("internal static void ObserveDialogDocument", StringComparison.Ordinal));
+            opened = opened.Substring(0, opened.IndexOf("private static void OnViewActivated", StringComparison.Ordinal));
+            Assert.Contains("DialogContext.InvalidateFamily();", opened);
+            var closed = events.Substring(events.IndexOf("private static void OnDocumentClosed", StringComparison.Ordinal));
+            closed = closed.Substring(0, closed.IndexOf("private static void OnDocumentSaved", StringComparison.Ordinal));
+            Assert.Contains("InvalidateFamily()", closed);
+        }
+
+        private static int CountOccurrences(string text, string token)
+        {
+            var count = 0; var i = 0;
+            while ((i = text.IndexOf(token, i, StringComparison.Ordinal)) >= 0) { count++; i += token.Length; }
+            return count;
+        }
+
+        private static string ReadSourcePath([CallerFilePath] string testFile = "") => testFile;
+
         private static string ReadSource(string folder, string file, [CallerFilePath] string testFile = "")
         {
             var root = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(testFile)!, "..", "..", "..", ".."));

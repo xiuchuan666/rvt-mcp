@@ -34,6 +34,9 @@ namespace RvtMcp.Plugin
             finally { scope.Discarding = previous; }
         }
 
+        internal static Document CurrentOwnedDocument(Document document)
+            => _scope != null && document != null && _scope.Owned.Any(item => Same(item, document)) ? document : null;
+
         internal static bool IsDiscardAuthorized(Document document) => _scope?.Discarding != null && Same(_scope.Discarding, document);
 
         private static bool Same(Document first, Document second)

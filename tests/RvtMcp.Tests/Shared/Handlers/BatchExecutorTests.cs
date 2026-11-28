@@ -72,6 +72,24 @@ namespace RvtMcp.Tests
             Assert.Contains("cannot be invoked through batch_execute", Newtonsoft.Json.JsonConvert.SerializeObject(outcome.Results));
         }
 
+        [Theory]
+        [InlineData("create_parametric_family", false)]
+        [InlineData("create_parametric_family", true)]
+        [InlineData("create_segment_family", false)]
+        [InlineData("create_segment_family", true)]
+        public void Independent_family_transaction_is_never_dispatched_in_batch(string command, bool continueOnError)
+        {
+            var invoked = false;
+            var outcome = BatchExecutor.Run(Cmds((command, null)), continueOnError, (_, __) =>
+            {
+                invoked = true;
+                return BatchExecutor.InvokeResult.Ok(null);
+            });
+            Assert.False(invoked);
+            Assert.True(outcome.AnyFailed);
+            Assert.Contains("call the corresponding revit_ family-authoring tool directly", Newtonsoft.Json.JsonConvert.SerializeObject(outcome.Results));
+        }
+
         [Fact]
         public void Policy_stop_before_first_command_prevents_dispatch()
         {

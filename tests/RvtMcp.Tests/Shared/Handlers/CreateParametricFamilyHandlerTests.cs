@@ -94,8 +94,22 @@ public sealed class CreateParametricFamilyHandlerTests
         Assert.Empty(result["temporary_files"]!);
     }
 
-    [Theory]
-    [InlineData("geometry_failure", 0)]
+    [Fact]
+    public void ReadBack_locked_count_survives_multisegment_EQ_dimensions_whose_IsLocked_getter_throws()
+    {
+        // The EQ skeleton dimensions are multi-segment. If native Revit throws when their IsLocked
+        // getter is read, ReadBack must still aggregate locked_alignment_count via SafeIsLocked
+        // instead of letting one EQ dimension abort the whole readback.
+        var result = R27Probe.Value("multiseg_islocked_getter_throws");
+        Assert.True(result.Value<bool>("success"), result.Value<string>("error"));
+        var data = result["data"]!;
+        Assert.All(data["parameters"]!, parameter => Assert.True(parameter!.Value<bool>("associated")));
+        Assert.Equal(2, data["geometry"]!.Value<int>("labelled_dimension_count"));
+        Assert.Equal(2, data["geometry"]!.Value<int>("origin_equality_count"));
+        Assert.True(data["geometry"]!.Value<bool>("dimensions_match"));
+        Assert.Empty(result["temporary_files"]!);
+    }
+
     [InlineData("template_failure", 0)]
     [InlineData("save_failure", 0)]
     public void Failure_never_saves_a_partial_family_and_closes_any_owned_document(string scenario, int saves)
@@ -379,7 +393,8 @@ namespace Autodesk.Revit.DB {
    set { _familyLabel=value; } }
   private bool _isLocked;
   public bool IsLocked {
-   get=>_isLocked;
+   get { if(Document.Scenario=="multiseg_islocked_getter_throws"&&NumberOfSegments>1)
+    throw new InvalidOperationException("Cannot access this property if this dimension is linear shape with more than one segments."); return _isLocked; }
    set { if(NumberOfSegments>1)throw new InvalidOperationException("Cannot access this property if this dimension is linear shape with more than one segments."); _isLocked=value; } }
   public bool Locked=>IsLocked; public bool AreSegmentsEqual;
   public double Value=4.0; public Parameter get_Parameter(BuiltInParameter p)=>new Parameter{IsReadOnly=false};
@@ -439,7 +454,7 @@ public static class Probe { public static string Run(string scenario){
   ["dimensions_created_after_regeneration"]=(doc?.DimensionsAfterRegeneration??0)==6,
   ["origin_equality_count"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>d.References.Items.Count==3&&d.AreSegmentsEqual)??0,
   ["private_family_discarded"]=RvtMcp.Plugin.Failures.FailureControl.Active.PrivateFamilyDiscarded,
-  ["locked_profile_alignments"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>d.IsLocked)??0}.ToString(); }
+  ["locked_profile_alignments"]=doc?.Items.OfType<Autodesk.Revit.DB.Dimension>().Count(d=>{try{return d.IsLocked;}catch{return false;}})??0}.ToString(); }
  finally { doc?.ReleaseFailedCloseLock();try{Directory.Delete(dir,true);}catch{} } } }
 """;
 }

@@ -540,6 +540,15 @@ namespace RvtMcp.Plugin.Handlers
             catch { return null; }
         }
 
+        private static bool SafeIsLocked(Dimension dimension)
+        {
+            // Reading IsLocked on a multi-segment linear dimension (such as the EQ skeleton
+            // dimensions) can throw on native Revit. Count only dimensions whose lock state is
+            // readable so locked_alignment_count aggregation never aborts the readback.
+            try { return dimension.IsLocked; }
+            catch { return false; }
+        }
+
         private static object ReadBack(Document doc, FamilyManager manager,
             IReadOnlyDictionary<string, FamilyParameter> parameters, Extrusion extrusion,
             string familyName, string typeName, double[] dimensions, int eqCount, int lockCount)
@@ -591,7 +600,7 @@ namespace RvtMcp.Plugin.Handlers
             if (!matches.All(match => match))
                 throw new InvalidOperationException("Regenerated extrusion geometry does not match the requested millimeter dimensions.");
 
-            var alignmentCount = allDims.Count(d => d.IsLocked);
+            var alignmentCount = allDims.Count(SafeIsLocked);
 
             return new
             {
